@@ -1004,6 +1004,8 @@ export default function App() {
           db={db}
           getDrugDir={getDrugDir}
           withdrawals={withdrawals}
+          setPutaway={setPutaway}
+          calcPutaway={calcPutaway}
         />
       )}
       {missingReturnModal && (
@@ -1017,6 +1019,8 @@ export default function App() {
           db={db}
           getDrugDir={getDrugDir}
           withdrawals={withdrawals}
+          setPutaway={setPutaway}
+          calcPutaway={calcPutaway}
         />
       )}
     </>
@@ -1261,7 +1265,7 @@ function SmartTimestampModal({ open, onClose, db }) {
 
 
 /* ═══ REPLACE MODAL (Multi-Drug + Partial + Success Overlay) ═══ */
-function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db, getDrugDir, withdrawals }) {
+function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db, getDrugDir, withdrawals, setPutaway, calcPutaway }) {
   const [nurse, setNurse] = useState('')
   const [nurseQuery, setNurseQuery] = useState('')
   const [nurseOpen, setNurseOpen] = useState(false)
@@ -1286,8 +1290,6 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
   
   const [cart, setCart] = useState(initialCart())
   const [saving, setSaving] = useState(false)
-  const [done, setDone] = useState(false)
-  const [doneItems, setDoneItems] = useState([])
   const [closeJob, setCloseJob] = useState(true)
 
   const getHoursSince = (ts) => {
@@ -1300,7 +1302,7 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
     if (!open) {
       setNurse(''); setNurseQuery(''); setNurseOpen(false)
       setCart(initialCart())
-      setSaving(false); setDone(false); setDoneItems([]); setCloseJob(true)
+      setSaving(false); setCloseJob(true)
     } else {
       // Reset cart when modal opens
       setCart(initialCart())
@@ -1319,8 +1321,8 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
   }
   const removeCartItem = (id) => setCart(prev => prev.filter(c => c.id !== id))
   
-  // Calculate FEFO Preview - ใช้ระบบเดียวกับ Restock + แสดงอันดับ
-  const calculateFEFO = (drugId, expiry, qtyToReplace = 0, isMissing = false) => {
+  // Calculate FEFO Preview - รวม multiple lots ที่เติมพร้อมกัน
+  const calculateFEFOWithReturns = (drugId, expiry, qtyToReplace = 0, isMissing = false, otherReturnedLots = []) => {
     if (!drugId || !expiry) return null
     
     let existingLots = lots
@@ -1343,7 +1345,17 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
     // ดู direction configuration ของยา
     const dir = getDrugDir(drugId)
     
-    if (existingLots.length === 0) {
+    // รวม existing + lots อื่นที่เติมพร้อมกัน + ยาใหม่ แล้ว sort
+    const allLots = [
+      ...existingLots.map(l => ({ expiry: l.expiry, isNew: false })),
+      ...otherReturnedLots.map(exp => ({ expiry: exp, isNew: false })),
+      { expiry, isNew: true }
+    ].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+    
+    const total = allLots.length
+    const newIndex = allLots.findIndex(l => l.isNew)
+    
+    if (total === 1) {
       // Single stock - lot แรก
       return { 
         label: `🟣 วางตำแหน่งที่ 1 (lot แรก)`, 
@@ -1351,15 +1363,6 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         desc: 'lot แรก'
       }
     }
-    
-    // รวม existing + ยาใหม่ แล้ว sort
-    const allLots = [
-      ...existingLots.map(l => ({ expiry: l.expiry, isNew: false })),
-      { expiry, isNew: true }
-    ].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
-    
-    const total = allLots.length
-    const newIndex = allLots.findIndex(l => l.isNew)
     
     // คำนวณอันดับตาม direction
     let position, label, color, positionText
@@ -1397,7 +1400,7 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
     }
     
     const newDate = new Date(expiry)
-    const fefoDate = new Date(existingLots[0].expiry)
+    const fefoDate = new Date(allLots[0].expiry)
     const isBeforeFefo = newDate <= fefoDate
     
     if (isBeforeFefo) {
@@ -1418,33 +1421,68 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
   }
   
   const updateCart = (id, field, val) => {
-    setCart(prev => prev.map(c => {
-      if (c.id !== id) return c
-      
-      const updated = { ...c, [field]: val }
-      
-      // คำนวณ FEFO preview หลังกรอก EXP
-      if ((field === 'expM' || field === 'expY' || field === 'fullDate') && updated.drugId) {
-        const isMissing = pending?.source === 'missing_tracked'
-        const drug = drugsWithStock().find(d => d.id == updated.drugId)
-        if (drug?.fullDateExp && updated.fullDate) {
-          updated.fefoPreview = calculateFEFO(updated.drugId, updated.fullDate, updated.qty || 0, isMissing)
-        } else if (!drug?.fullDateExp && updated.expM && updated.expY) {
-          const lastDay = new Date(+updated.expY, +updated.expM, 0).getDate()
-          const expiry = `${updated.expY}-${String(updated.expM).padStart(2,'0')}-${lastDay}`
-          updated.fefoPreview = calculateFEFO(updated.drugId, expiry, updated.qty || 0, isMissing)
-        } else {
-          updated.fefoPreview = null
+    setCart(prev => {
+      const updated = prev.map(c => {
+        if (c.id !== id) return c
+        const u = { ...c, [field]: val }
+        
+        // Clear preview ถ้าเปลี่ยนยา
+        if (field === 'drugId') {
+          u.fefoPreview = null
         }
-      }
+        
+        return u
+      })
       
-      // Clear preview ถ้าเปลี่ยนยา
-      if (field === 'drugId') {
-        updated.fefoPreview = null
-      }
+      // Recalculate FEFO for ALL items after any update
+      const isMissing = pending?.source === 'missing_tracked'
       
-      return updated
-    }))
+      return updated.map(item => {
+        if (!item.drugId || ((!item.expM || !item.expY) && !item.fullDate)) {
+          return { ...item, fefoPreview: null }
+        }
+        
+        const drug = drugsWithStock().find(d => d.id == item.drugId)
+        if (!drug) return { ...item, fefoPreview: null }
+        
+        // คำนวณ expiry ของ item นี้
+        let expiry
+        if (drug?.fullDateExp && item.fullDate) {
+          expiry = item.fullDate
+        } else if (!drug?.fullDateExp && item.expM && item.expY) {
+          const lastDay = new Date(+item.expY, +item.expM, 0).getDate()
+          expiry = `${item.expY}-${String(item.expM).padStart(2,'0')}-${lastDay}`
+        } else {
+          return { ...item, fefoPreview: null }
+        }
+        
+        // หา expiry ของ lots อื่นที่เติมพร้อมกัน
+        const otherReturnedLots = updated
+          .filter(c => c.id !== item.id && c.drugId == item.drugId)
+          .map(c => {
+            if (drug?.fullDateExp && c.fullDate) {
+              return c.fullDate
+            } else if (!drug?.fullDateExp && c.expM && c.expY) {
+              const lastDay = new Date(+c.expY, +c.expM, 0).getDate()
+              return `${c.expY}-${String(c.expM).padStart(2,'0')}-${lastDay}`
+            }
+            return null
+          })
+          .filter(Boolean)
+        
+        // คำนวณ FEFO รวมกับ lots อื่น
+        return {
+          ...item,
+          fefoPreview: calculateFEFOWithReturns(
+            item.drugId, 
+            expiry, 
+            item.qty || 0, 
+            isMissing,
+            otherReturnedLots
+          )
+        }
+      })
+    })
   }
 
   const submit = async () => {
@@ -1453,11 +1491,13 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
     if (validItems.length === 0) return alert('กรุณาเลือกยาอย่างน้อย 1 รายการ')
 
     setSaving(true)
-    const done_info = []
     try {
       const dl = drugsWithStock()
       const recon_mins = Math.round(getHoursSince(pending.timestamp) * 60)
 
+      // Group items by drugId for PutawayOverlay
+      const drugGroups = {}
+      
       for (const item of validItems) {
         const drug = dl.find(d => d.id == item.drugId)
         if (!drug) continue
@@ -1533,8 +1573,12 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
             reconciliation_time_minutes: recon_mins
           })
         }
-
-        done_info.push({ name: drug.name, qty: item.qty, unit: drug.unit, expiry: newExpiry })
+        
+        // Group lots by drugId for overlay
+        if (!drugGroups[drug.id]) {
+          drugGroups[drug.id] = { drug, lots: [] }
+        }
+        drugGroups[drug.id].lots.push({ expiry: newExpiry, qty: item.qty })
       }
 
       // 4. Close pending if requested
@@ -1547,8 +1591,49 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         })
       }
 
-      setDoneItems(done_info)
-      setDone(true)
+      // 5. Show PutawayOverlay แทน success screen
+      // ถ้ามีหลายยา แสดงแค่ยาแรก (หรือแยกแสดงทีละยาก็ได้)
+      const firstDrugId = Object.keys(drugGroups)[0]
+      if (firstDrugId) {
+        const { drug, lots: returnLots } = drugGroups[firstDrugId]
+        
+        if (drug?.singleStock) {
+          const group = STORAGE_GROUPS.find(g => g.id === drug.groupId)
+          setPutaway({
+            drug,
+            qty: returnLots[0].qty,
+            expiry: returnLots[0].expiry,
+            context: 'return',
+            singleStock: true,
+            groupName: group?.name || '',
+            groupIcon: group?.icon || '📦'
+          })
+        } else {
+          // Multi-lot or single lot
+          const sortedLots = returnLots.sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+          const pa = calcPutaway(drug.id, sortedLots[0].expiry)
+          
+          if (sortedLots.length === 1) {
+            setPutaway({
+              drug,
+              qty: sortedLots[0].qty,
+              expiry: sortedLots[0].expiry,
+              pa,
+              context: 'return'
+            })
+          } else {
+            setPutaway({
+              drug,
+              returnLots: sortedLots,
+              pa,
+              context: 'return'
+            })
+          }
+        }
+      }
+      
+      // Close modal
+      onClose()
     } catch (e) {
       alert('เกิดข้อผิดพลาด: ' + e.message)
     }
@@ -1561,27 +1646,6 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
   const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
   const thM = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
   const years = Array.from({length:10},(_,i)=>curYear+i)
-
-  // ── Success Screen ──
-  if (done) return (
-    <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.65)', zIndex:500, display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
-      <div style={{ background:'#fff', borderRadius:'14px 14px 0 0', width:'100%', maxWidth:480, padding:'28px 20px 36px', textAlign:'center' }}>
-        <div style={{ fontSize:52, marginBottom:10 }}>✅</div>
-        <div style={{ fontSize:17, fontWeight:600, color:'#0F6E56', marginBottom:4 }}>เติมยาคืนสำเร็จ!</div>
-        <div style={{ fontSize:12, color:'#5F7A6A', marginBottom:2 }}>เตียง {pending.bed_id} · โดย {nurse}</div>
-        {!closeJob && <div style={{ fontSize:11, color:'#E65100', marginTop:2, fontWeight:500 }}>⚠️ รายการ Pending ยังเปิดอยู่ (คืนบางส่วน)</div>}
-        <div style={{ border:'0.5px solid #E0EAE5', borderRadius:10, overflow:'hidden', margin:'14px 0', textAlign:'left' }}>
-          {doneItems.map((item, i) => (
-            <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'9px 14px', fontSize:12, borderBottom: i < doneItems.length-1 ? '0.5px solid #EEF4F0' : 'none' }}>
-              <span>{item.name}</span>
-              <span style={{ color:'#0F6E56', fontWeight:500 }}>×{item.qty} {item.unit}</span>
-            </div>
-          ))}
-        </div>
-        <button className="btn primary full" onClick={onClose}>ปิด</button>
-      </div>
-    </div>
-  )
 
   // ── Main Form ──
   return (
