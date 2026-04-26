@@ -624,8 +624,6 @@ export default function App() {
   const [replacePending, setReplacePending] = useState(null)
   const [missingReturnModal, setMissingReturnModal] = useState(false)
   const [missingReturnPending, setMissingReturnPending] = useState(null)
-  const [stockReturnModal, setStockReturnModal] = useState(false)
-  const [stockReturnWithdrawal, setStockReturnWithdrawal] = useState(null)
   const [expirySearchOverride, setExpirySearchOverride] = useState('')
 
   // Data state
@@ -958,8 +956,10 @@ export default function App() {
               db={db}
               setReplaceModal={(p) => { setReplacePending(p); setReplaceModal(true) }}
               setMissingReturnModal={(p) => { setMissingReturnPending(p); setMissingReturnModal(true) }}
-              setStockReturnModal={(w) => { setStockReturnWithdrawal(w); setStockReturnModal(true) }}
               fmtDTsafe={fmtDTsafe}
+              lots={lots}
+              drugsWithStock={drugsWithStock}
+              getDrugDir={getDrugDir}
             />
           )}
           {curTab === 'setting' && (
@@ -1015,18 +1015,6 @@ export default function App() {
           db={db}
           getDrugDir={getDrugDir}
           withdrawals={withdrawals}
-        />
-      )}
-      {stockReturnModal && (
-        <StockReturnModal
-          open={stockReturnModal}
-          onClose={() => { setStockReturnModal(false); setStockReturnWithdrawal(null) }}
-          withdrawal={stockReturnWithdrawal}
-          drugsWithStock={drugsWithStock}
-          lots={lots}
-          nurses={nurses}
-          db={db}
-          getDrugDir={getDrugDir}
         />
       )}
     </>
@@ -1264,358 +1252,6 @@ function SmartTimestampModal({ open, onClose, db }) {
             <div style={{ fontSize:11, color:'#8BA898' }}>ปิดอัตโนมัติใน {countdown} วินาที...</div>
           </div>
         )}
-      </div>
-    </div>
-  )
-}
-
-
-/* ═══ STOCK RETURN MODAL (FEFO Interface) ═══ */
-function StockReturnModal({ open, onClose, withdrawal, drugsWithStock, lots, nurses, db, getDrugDir }) {
-  const [nurse, setNurse] = useState('')
-  const [nurseQuery, setNurseQuery] = useState('')
-  const [nurseOpen, setNurseOpen] = useState(false)
-  
-  // Multi-lot cart สำหรับคืนยา (ยาเดียวกัน แต่อาจมี EXP ต่างกัน)
-  const [cart, setCart] = useState([{ id: 1, qty: 1, expM: '', expY: '', fullDate: '', fefoPreview: null }])
-  const [saving, setSaving] = useState(false)
-  const [done, setDone] = useState(false)
-  const [doneItems, setDoneItems] = useState([])
-
-  useEffect(() => {
-    if (!open) {
-      setNurse(''); setNurseQuery(''); setNurseOpen(false)
-      setCart([{ id: 1, qty: 1, expM: '', expY: '', fullDate: '', fefoPreview: null }])
-      setSaving(false); setDone(false); setDoneItems([])
-    } else {
-      // Reset cart when modal opens
-      setCart([{ id: 1, qty: 1, expM: '', expY: '', fullDate: '', fefoPreview: null }])
-    }
-  }, [open])
-
-  const addCartItem = () => {
-    setCart(prev => [...prev, { id: Date.now(), qty: 1, expM: '', expY: '', fullDate: '', fefoPreview: null }])
-  }
-  const removeCartItem = (id) => setCart(prev => prev.filter(c => c.id !== id))
-  
-  // Calculate FEFO Preview - ใช้ระบบเดียวกับ ReplaceModal
-  const calculateFEFO = (drugId, expiry, qtyToReturn = 0) => {
-    if (!drugId || !expiry) return null
-    
-    // For stock returns, we don't deduct any existing stock
-    const existingLots = lots
-      .filter(l => l.drugId == drugId && l.qty > 0)
-      .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
-    
-    const dir = getDrugDir(drugId)
-    
-    if (existingLots.length === 0) {
-      // Single stock - lot แรก
-      return { 
-        label: `🟣 วางตำแหน่งที่ 1 (lot แรก)`, 
-        color: '#9C27B0', 
-        desc: 'lot แรก'
-      }
-    }
-    
-    // รวม existing + ยาใหม่ แล้ว sort
-    const allLots = [
-      ...existingLots.map(l => ({ expiry: l.expiry, isNew: false })),
-      { expiry, isNew: true }
-    ].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
-    
-    const total = allLots.length
-    const newIndex = allLots.findIndex(l => l.isNew)
-    
-    // คำนวณอันดับตาม direction
-    let position, label, color, positionText
-    
-    if (dir === 'rtl') {
-      position = newIndex + 1
-      if (position === 1) {
-        positionText = 'ขวาสุด'
-      } else if (position === total) {
-        positionText = 'ซ้ายสุด'
-      } else {
-        positionText = `ที่ ${position} นับจากขวา`
-      }
-    } else if (dir === 'fb') {
-      position = newIndex + 1
-      if (position === 1) {
-        positionText = 'หน้าสุด'
-      } else if (position === total) {
-        positionText = 'หลังสุด'
-      } else {
-        positionText = `ที่ ${position} นับจากหน้า`
-      }
-    } else {
-      position = newIndex + 1
-      if (position === 1) {
-        positionText = 'ซ้ายสุด'
-      } else if (position === total) {
-        positionText = 'ขวาสุด'
-      } else {
-        positionText = `ที่ ${position} นับจากซ้าย`
-      }
-    }
-    
-    const newDate = new Date(expiry)
-    const fefoDate = new Date(existingLots[0].expiry)
-    const isBeforeFefo = newDate <= fefoDate
-    
-    if (isBeforeFefo) {
-      color = '#4CAF50'
-      label = `🟢 วาง${positionText}`
-    } else {
-      color = '#F44336'
-      label = `🔴 วาง${positionText}`
-    }
-    
-    return { 
-      label, 
-      color, 
-      desc: `จาก ${total} ตำแหน่ง`
-    }
-  }
-  
-  const updateCart = (id, field, val) => {
-    setCart(prev => prev.map(c => {
-      if (c.id !== id) return c
-      
-      const updated = { ...c, [field]: val }
-      
-      // คำนวณ FEFO preview หลังกรอก EXP
-      if ((field === 'expM' || field === 'expY' || field === 'fullDate') && withdrawal?.drugId) {
-        const drug = drugsWithStock().find(d => d.id == withdrawal.drugId)
-        if (drug?.fullDateExp && updated.fullDate) {
-          updated.fefoPreview = calculateFEFO(withdrawal.drugId, updated.fullDate, updated.qty || 0)
-        } else if (!drug?.fullDateExp && updated.expM && updated.expY) {
-          const lastDay = new Date(+updated.expY, +updated.expM, 0).getDate()
-          const expiry = `${updated.expY}-${String(updated.expM).padStart(2,'0')}-${lastDay}`
-          updated.fefoPreview = calculateFEFO(withdrawal.drugId, expiry, updated.qty || 0)
-        } else {
-          updated.fefoPreview = null
-        }
-      }
-      
-      return updated
-    }))
-  }
-
-  const submit = async () => {
-    if (!nurse || saving) return
-    const validItems = cart.filter(c => (c.expM && c.expY) || c.fullDate)
-    if (validItems.length === 0) return alert('กรุณากรอก EXP อย่างน้อย 1 รายการ')
-
-    // Check total qty
-    const totalQty = validItems.reduce((sum, item) => sum + item.qty, 0)
-    if (totalQty !== withdrawal.qty) {
-      if (!confirm(`จำนวนรวม ${totalQty} ไม่เท่ากับเบิกไป ${withdrawal.qty}\nดำเนินการต่อหรือไม่?`)) {
-        return
-      }
-    }
-
-    setSaving(true)
-    const done_info = []
-    try {
-      const dl = drugsWithStock()
-      const drug = dl.find(d => d.id == withdrawal.drugId)
-      if (!drug) throw new Error('ไม่พบข้อมูลยา')
-
-      const useFull = drug?.fullDateExp
-
-      for (const item of validItems) {
-        const newExpiry = useFull
-          ? item.fullDate || '2099-12-31'
-          : (item.expM && item.expY
-            ? `${item.expY}-${String(item.expM).padStart(2,'0')}-${new Date(+item.expY,+item.expM,0).getDate()}`
-            : '2099-12-31')
-
-        // Add returned lot back to stock
-        await addDoc(collection(db, 'lots'), {
-          drugId: drug.id, 
-          qty: item.qty, 
-          expiry: newExpiry,
-          addedAt: Timestamp.now(), 
-          source: 'return', 
-          loaned: false
-        })
-
-        done_info.push({ name: drug.name, qty: item.qty, unit: drug.unit, expiry: newExpiry })
-      }
-
-      // Mark withdrawal as returned
-      await updateDoc(doc(db, 'withdrawals', withdrawal.docId), {
-        returned: true,
-        retExp: done_info.map(d => d.expiry).join(', '),
-        return_timestamp: Timestamp.now(),
-        return_nurse: nurse
-      })
-
-      setDoneItems(done_info)
-      setDone(true)
-    } catch (e) {
-      alert('เกิดข้อผิดพลาด: ' + e.message)
-    }
-    setSaving(false)
-  }
-
-  if (!open || !withdrawal) return null
-  const dl = drugsWithStock()
-  const drug = dl.find(d => d.id == withdrawal.drugId)
-  const curYear = new Date().getFullYear()
-  const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
-  const thM = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
-  const years = Array.from({length:10},(_,i)=>curYear+i)
-
-  // ── Success Screen ──
-  if (done) return (
-    <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.65)', zIndex:500, display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
-      <div style={{ background:'#fff', borderRadius:'14px 14px 0 0', width:'100%', maxWidth:480, padding:'28px 20px 36px', textAlign:'center' }}>
-        <div style={{ fontSize:52, marginBottom:10 }}>✅</div>
-        <div style={{ fontSize:17, fontWeight:600, color:'#0F6E56', marginBottom:4 }}>คืนยาสำเร็จ!</div>
-        <div style={{ fontSize:12, color:'#5F7A6A', marginBottom:2 }}>เตียง {withdrawal.bed} · โดย {nurse}</div>
-        <div style={{ border:'0.5px solid #E0EAE5', borderRadius:10, overflow:'hidden', margin:'14px 0', textAlign:'left' }}>
-          {doneItems.map((item, i) => (
-            <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'9px 14px', fontSize:12, borderBottom: i < doneItems.length-1 ? '0.5px solid #EEF4F0' : 'none' }}>
-              <span>{item.name}</span>
-              <span style={{ color:'#0F6E56', fontWeight:500 }}>×{item.qty} {item.unit}</span>
-            </div>
-          ))}
-        </div>
-        <button className="btn primary full" onClick={onClose}>ปิด</button>
-      </div>
-    </div>
-  )
-
-  // ── Main Form ──
-  return (
-    <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.65)', zIndex:500, display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
-      <div style={{ background:'#fff', borderRadius:'14px 14px 0 0', width:'100%', maxWidth:480, maxHeight:'90vh', display:'flex', flexDirection:'column' }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 16px', borderBottom:'0.5px solid #E0EAE5' }}>
-          <div style={{ fontSize:14, fontWeight:500, color:'#0F6E56' }}>✓ Return + อยู่ตำแหน่งไหนวางกลับ</div>
-          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', fontSize:20, color:'#8BA898' }}>✕</button>
-        </div>
-
-        <div style={{ flex:1, overflowY:'auto', padding:'12px 14px' }}>
-          {/* Withdrawal info */}
-          <div className="card blue" style={{ marginBottom:12 }}>
-            <div style={{ fontSize:13, fontWeight:600 }}>{withdrawal.bed} — {withdrawal.drugName}
-              <span className="b" style={{ marginLeft:6, background:'#E3F2FD', color:'#1565C0', border:'0.5px solid #64B5F6', padding:'2px 8px', borderRadius:12, fontSize:10 }}>เบิกไป ×{withdrawal.qty}</span>
-            </div>
-            <div style={{ fontSize:11, color:'#5F7A6A', marginTop:2 }}>
-              ระบบ + FEFO จะบอกว่าอยู่ตำแหน่งไหนวางกลับ
-            </div>
-          </div>
-
-          {/* Nurse */}
-          <div className="lbl">พยาบาลผู้คืนยา</div>
-          <NursePicker value={nurse} query={nurseQuery} open={nurseOpen} nurses={nurses}
-            onChange={(v,o)=>{ setNurseQuery(v); setNurse(''); setNurseOpen(o!==undefined?o:v.length>0) }}
-            onSelect={v=>{ setNurse(v); setNurseQuery(v); setNurseOpen(false) }}
-            onClear={()=>{ setNurse(''); setNurseQuery(''); setNurseOpen(false) }} />
-
-          {/* Drug name display */}
-          <div style={{ marginTop:14, marginBottom:8, padding:'10px 12px', background:'#FFF', border:'0.5px solid #D8EAE0', borderRadius:8 }}>
-            <div style={{ fontSize:13, fontWeight:500, color:'#1A2E25' }}>{withdrawal.drugName}</div>
-            <div style={{ fontSize:11, color:'#5F7A6A', marginTop:2 }}>ระบบ + FEFO ทำงาน</div>
-          </div>
-
-          {/* Multi-lot cart */}
-          <div style={{ marginTop:14, marginBottom:4, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-            <div style={{ fontSize:12, fontWeight:500, color:'#1A2E25' }}>ระบุ EXP ของยาที่คืน</div>
-            <button onClick={addCartItem} className="btn sm" style={{ fontSize:11, padding:'4px 10px', color:'#0F6E56', borderColor:'#9FE1CB' }}>+ เพิ่ม lot (ถ้า EXP ต่าง)</button>
-          </div>
-
-          {cart.map((item, idx) => {
-            return (
-              <div key={item.id} style={{ border:'0.5px solid #D8EAE0', borderRadius:10, padding:'10px 12px', marginBottom:8, background:'#F9FCF9' }}>
-                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
-                  <div style={{ fontSize:11, fontWeight:500, color:'#5F7A6A' }}>
-                    ชุดที่ {idx+1}
-                  </div>
-                  {cart.length > 1 && (
-                    <button onClick={() => removeCartItem(item.id)} style={{ background:'none', border:'none', cursor:'pointer', color:'#A32D2D', fontSize:16 }}>✕</button>
-                  )}
-                </div>
-
-                {/* Qty */}
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
-                  <div>
-                    <div className="lbl" style={{ marginTop:0 }}>จำนวน</div>
-                    <input type="number" className="inp" value={item.qty} min="1"
-                      onChange={e=>updateCart(item.id,'qty',Math.max(1,parseInt(e.target.value)||1))} />
-                  </div>
-                  {drug?.fullDateExp ? (
-                    <div>
-                      <div className="lbl" style={{ marginTop:0 }}>EXP (วัน/เดือน/ปี)</div>
-                      <input type="date" className="inp" value={item.fullDate}
-                        onChange={e=>updateCart(item.id,'fullDate',e.target.value)}
-                        min={new Date().toISOString().split('T')[0]} />
-                    </div>
-                  ) : (
-                    <div>
-                      <div className="lbl" style={{ marginTop:0 }}>เดือน EXP</div>
-                      <select className="inp" value={item.expM} onChange={e=>updateCart(item.id,'expM',e.target.value)}>
-                        <option value="">-- Month --</option>
-                        {months.map((m,i)=><option key={m} value={m}>{m} ({thM[i]})</option>)}
-                      </select>
-                    </div>
-                  )}
-                </div>
-                {!drug?.fullDateExp && (
-                  <div>
-                    <div className="lbl" style={{ marginTop:0 }}>EXP Year</div>
-                    <select className="inp" value={item.expY} onChange={e=>updateCart(item.id,'expY',e.target.value)}>
-                      <option value="">-- Year --</option>
-                      {years.map(y=><option key={y} value={y}>{y}</option>)}
-                    </select>
-                  </div>
-                )}
-                
-                {/* FEFO Preview */}
-                {item.fefoPreview && (
-                  <div style={{ 
-                    marginTop: 8, 
-                    padding: '8px 12px', 
-                    background: item.fefoPreview.color + '15',
-                    border: `0.5px solid ${item.fefoPreview.color}80`,
-                    borderRadius: 8,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8
-                  }}>
-                    <div style={{ 
-                      fontSize: 11, 
-                      fontWeight: 600, 
-                      color: item.fefoPreview.color 
-                    }}>
-                      {item.fefoPreview.label}
-                    </div>
-                    <div style={{ 
-                      fontSize: 10, 
-                      color: '#5F7A6A',
-                      flex: 1
-                    }}>
-                      {item.fefoPreview.desc}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-
-          <div style={{ marginTop:8, padding:'8px 10px', background:'#E1F5EE', borderRadius:8, fontSize:10, color:'#5F7A6A' }}>
-            💡 เพิ่มยากลับเข้าสต็อก → บันทึกการคืน → ปิดรายการ
-          </div>
-        </div>
-
-        <div style={{ padding:'10px 14px', borderTop:'0.5px solid #E0EAE5' }}>
-          <button className="btn primary full" onClick={submit}
-            disabled={!nurse || cart.filter(c=>(c.expM && c.expY) || c.fullDate).length===0 || saving}>
-            {saving ? 'กำลังบันทึก...' : `✓ Return ${cart.filter(c=>(c.expM && c.expY) || c.fullDate).length} lots (${cart.reduce((s,c)=>s+c.qty,0)} ชิ้น)`}
-          </button>
-        </div>
       </div>
     </div>
   )
@@ -2129,7 +1765,7 @@ function ConfirmModal({ open, title, message, icon, onConfirm, onCancel, confirm
 
 
 /* ═══ PENDING VIEW TAB ═══ */
-function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceModal, setMissingReturnModal, setStockReturnModal, fmtDTsafe }) {
+function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceModal, setMissingReturnModal, fmtDTsafe, lots, drugsWithStock, getDrugDir }) {
   const pending = pendingSyncs.filter(p => p.status === 'pending')
   
   // รวม Stock Returns (withdrawals ที่ยังไม่ได้คืน และไม่มี pending_sync_id)
@@ -2152,6 +1788,7 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
   
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [pendingDeleteId, setPendingDeleteId] = React.useState(null)
+  const [retStates, setRetStates] = React.useState({})
 
   const getHoursSince = (timestamp) => {
     if (!timestamp) return 0
@@ -2181,6 +1818,174 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
     setPendingDeleteId(null)
   }
   
+  // Calculate FEFO Preview for inline return form
+  const calculateFEFO = (drugId, expiry) => {
+    if (!drugId || !expiry) return null
+    
+    const existingLots = lots
+      .filter(l => l.drugId == drugId && l.qty > 0)
+      .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+    
+    const dir = getDrugDir(drugId)
+    
+    if (existingLots.length === 0) {
+      return { 
+        label: `🟣 วางตำแหน่งที่ 1 (lot แรก)`, 
+        color: '#9C27B0', 
+        desc: 'lot แรก'
+      }
+    }
+    
+    const allLots = [
+      ...existingLots.map(l => ({ expiry: l.expiry, isNew: false })),
+      { expiry, isNew: true }
+    ].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+    
+    const total = allLots.length
+    const newIndex = allLots.findIndex(l => l.isNew)
+    
+    let position, label, color, positionText
+    
+    if (dir === 'rtl') {
+      position = newIndex + 1
+      positionText = position === 1 ? 'ขวาสุด' : position === total ? 'ซ้ายสุด' : `ที่ ${position} นับจากขวา`
+    } else if (dir === 'fb') {
+      position = newIndex + 1
+      positionText = position === 1 ? 'หน้าสุด' : position === total ? 'หลังสุด' : `ที่ ${position} นับจากหน้า`
+    } else {
+      position = newIndex + 1
+      positionText = position === 1 ? 'ซ้ายสุด' : position === total ? 'ขวาสุด' : `ที่ ${position} นับจากซ้าย`
+    }
+    
+    const newDate = new Date(expiry)
+    const fefoDate = new Date(existingLots[0].expiry)
+    const isBeforeFefo = newDate <= fefoDate
+    
+    color = isBeforeFefo ? '#4CAF50' : '#F44336'
+    label = isBeforeFefo ? `🟢 วาง${positionText}` : `🔴 วาง${positionText}`
+    
+    return { label, color, desc: `จาก ${total} ตำแหน่ง` }
+  }
+  
+  const openRet = (docId, drugId) => {
+    const dl = drugsWithStock()
+    const drug = dl.find(d => d.id == drugId)
+    setRetStates(prev => ({ 
+      ...prev, 
+      [docId]: { 
+        open: true, 
+        entries: [{ 
+          id: 1, 
+          qty: 1, 
+          expM: '', 
+          expY: '', 
+          fullDate: '', 
+          fefoPreview: null 
+        }],
+        useFull: drug?.fullDateExp || false
+      } 
+    }))
+  }
+  
+  const closeRet = (docId) => setRetStates(prev => { const n = { ...prev }; delete n[docId]; return n })
+  
+  const addRetEntry = (docId) => {
+    setRetStates(prev => ({
+      ...prev,
+      [docId]: {
+        ...prev[docId],
+        entries: [...prev[docId].entries, { id: Date.now(), qty: 1, expM: '', expY: '', fullDate: '', fefoPreview: null }]
+      }
+    }))
+  }
+  
+  const removeRetEntry = (docId, entryId) => {
+    setRetStates(prev => ({
+      ...prev,
+      [docId]: {
+        ...prev[docId],
+        entries: prev[docId].entries.filter(e => e.id !== entryId)
+      }
+    }))
+  }
+  
+  const updateRetEntry = (docId, entryId, field, val, drugId) => {
+    setRetStates(prev => {
+      const state = prev[docId]
+      const updatedEntries = state.entries.map(e => {
+        if (e.id !== entryId) return e
+        
+        const updated = { ...e, [field]: val }
+        
+        // Calculate FEFO preview when EXP is entered
+        if ((field === 'expM' || field === 'expY' || field === 'fullDate') && drugId) {
+          const dl = drugsWithStock()
+          const drug = dl.find(d => d.id == drugId)
+          if (drug?.fullDateExp && updated.fullDate) {
+            updated.fefoPreview = calculateFEFO(drugId, updated.fullDate)
+          } else if (!drug?.fullDateExp && updated.expM && updated.expY) {
+            const lastDay = new Date(+updated.expY, +updated.expM, 0).getDate()
+            const expiry = `${updated.expY}-${String(updated.expM).padStart(2,'0')}-${lastDay}`
+            updated.fefoPreview = calculateFEFO(drugId, expiry)
+          } else {
+            updated.fefoPreview = null
+          }
+        }
+        
+        return updated
+      })
+      
+      return {
+        ...prev,
+        [docId]: { ...state, entries: updatedEntries }
+      }
+    })
+  }
+  
+  const submitReturn = async (withdrawal) => {
+    const state = retStates[withdrawal.docId]
+    if (!state) return
+    
+    const validEntries = state.entries.filter(e => (e.expM && e.expY) || e.fullDate)
+    if (validEntries.length === 0) return alert('กรุณากรอก EXP อย่างน้อย 1 รายการ')
+    
+    try {
+      const dl = drugsWithStock()
+      const drug = dl.find(d => d.id == withdrawal.drugId)
+      if (!drug) throw new Error('ไม่พบข้อมูลยา')
+      
+      for (const entry of validEntries) {
+        const newExpiry = state.useFull
+          ? entry.fullDate || '2099-12-31'
+          : (entry.expM && entry.expY
+            ? `${entry.expY}-${String(entry.expM).padStart(2,'0')}-${new Date(+entry.expY,+entry.expM,0).getDate()}`
+            : '2099-12-31')
+        
+        await addDoc(collection(db, 'lots'), {
+          drugId: drug.id,
+          qty: entry.qty,
+          expiry: newExpiry,
+          addedAt: Timestamp.now(),
+          source: 'return',
+          loaned: false
+        })
+      }
+      
+      await updateDoc(doc(db, 'withdrawals', withdrawal.docId), {
+        returned: true,
+        retExp: validEntries.map(e => 
+          state.useFull ? e.fullDate : `${e.expY}-${String(e.expM).padStart(2,'0')}`
+        ).join(', '),
+        return_timestamp: Timestamp.now()
+      })
+      
+      closeRet(withdrawal.docId)
+      alert('✅ คืนยาสำเร็จ!')
+    } catch (e) {
+      alert('เกิดข้อผิดพลาด: ' + e.message)
+    }
+  }
+
   return (
     <div className="scroll">
       {/* Confirm Delete Overlay */}
@@ -2242,7 +2047,13 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
                 </div>
               )
             } else {
-              // Stock Return
+              // Stock Return - inline form with FEFO preview
+              const rs = retStates[item.docId]
+              const curYear = new Date().getFullYear()
+              const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
+              const thM = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
+              const years = Array.from({length:10},(_,i)=>curYear+i)
+              
               return (
                 <div key={item.docId} className={`pending-card ${agingClass}`}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: 8 }}>
@@ -2256,7 +2067,111 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
                     </div>
                     <div className={`aging ${agingClass}`}>⏱ {hours.toFixed(1)} ชม.</div>
                   </div>
-                  <button onClick={() => setStockReturnModal(item)} className="btn primary full sm">✓ Return + อยู่ตำแหน่งไหนวางกลับ</button>
+                  
+                  {!rs?.open && (
+                    <button onClick={() => openRet(item.docId, item.drugId)} className="btn primary full sm">
+                      ยืนยัน Return + อยู่ตำแหน่งไหนวางกลับ
+                    </button>
+                  )}
+                  
+                  {rs?.open && (
+                    <div style={{ marginTop: 8, padding: '10px 12px', background: '#F9FCF9', border: '0.5px solid #D8EAE0', borderRadius: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 500, color: '#1A2E25', marginBottom: 8 }}>
+                        ระบุ EXP ของยาที่คืน
+                        {rs.entries.length === 1 && (
+                          <button onClick={() => addRetEntry(item.docId)} 
+                            style={{ float: 'right', fontSize: 10, padding: '2px 8px', background: '#E1F5EE', border: '0.5px solid #9FE1CB', borderRadius: 6, color: '#0F6E56', cursor: 'pointer' }}>
+                            + เพิ่ม lot (ถ้า EXP ต่าง)
+                          </button>
+                        )}
+                      </div>
+                      
+                      <div style={{ fontSize: 11, color: '#5F7A6A', marginBottom: 8, padding: '6px 10px', background: '#E3F2FD', borderRadius: 6 }}>
+                        💡 FEFO ทำงาน: 03/2027
+                      </div>
+                      
+                      {rs.entries.map((entry, idx) => (
+                        <div key={entry.id} style={{ marginBottom: 8, padding: '8px 10px', background: '#fff', border: '0.5px solid #E0EAE5', borderRadius: 6 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <div style={{ fontSize: 10, fontWeight: 500, color: '#5F7A6A' }}>ชุดที่ {idx + 1}</div>
+                            {rs.entries.length > 1 && (
+                              <button onClick={() => removeRetEntry(item.docId, entry.id)}
+                                style={{ background: 'none', border: 'none', color: '#A32D2D', fontSize: 14, cursor: 'pointer' }}>✕</button>
+                            )}
+                          </div>
+                          
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+                            <div>
+                              <div style={{ fontSize: 10, color: '#5F7A6A', marginBottom: 2 }}>จำนวน</div>
+                              <input type="number" value={entry.qty} min="1"
+                                onChange={e => updateRetEntry(item.docId, entry.id, 'qty', Math.max(1, parseInt(e.target.value) || 1), item.drugId)}
+                                style={{ width: '100%', padding: '6px 8px', fontSize: 12, border: '0.5px solid #D8EAE0', borderRadius: 6 }} />
+                            </div>
+                            {rs.useFull ? (
+                              <div>
+                                <div style={{ fontSize: 10, color: '#5F7A6A', marginBottom: 2 }}>EXP (วัน/เดือน/ปี)</div>
+                                <input type="date" value={entry.fullDate}
+                                  onChange={e => updateRetEntry(item.docId, entry.id, 'fullDate', e.target.value, item.drugId)}
+                                  min={new Date().toISOString().split('T')[0]}
+                                  style={{ width: '100%', padding: '6px 8px', fontSize: 12, border: '0.5px solid #D8EAE0', borderRadius: 6 }} />
+                              </div>
+                            ) : (
+                              <div>
+                                <div style={{ fontSize: 10, color: '#5F7A6A', marginBottom: 2 }}>เดือน EXP</div>
+                                <select value={entry.expM} 
+                                  onChange={e => updateRetEntry(item.docId, entry.id, 'expM', e.target.value, item.drugId)}
+                                  style={{ width: '100%', padding: '6px 8px', fontSize: 12, border: '0.5px solid #D8EAE0', borderRadius: 6 }}>
+                                  <option value="">-- Month --</option>
+                                  {months.map((m,i) => <option key={m} value={m}>{m} ({thM[i]})</option>)}
+                                </select>
+                              </div>
+                            )}
+                          </div>
+                          
+                          {!rs.useFull && (
+                            <div style={{ marginBottom: 6 }}>
+                              <div style={{ fontSize: 10, color: '#5F7A6A', marginBottom: 2 }}>EXP Year</div>
+                              <select value={entry.expY}
+                                onChange={e => updateRetEntry(item.docId, entry.id, 'expY', e.target.value, item.drugId)}
+                                style={{ width: '100%', padding: '6px 8px', fontSize: 12, border: '0.5px solid #D8EAE0', borderRadius: 6 }}>
+                                <option value="">-- Year --</option>
+                                {years.map(y => <option key={y} value={y}>{y}</option>)}
+                              </select>
+                            </div>
+                          )}
+                          
+                          {/* FEFO Preview */}
+                          {entry.fefoPreview && (
+                            <div style={{ 
+                              padding: '6px 10px', 
+                              background: entry.fefoPreview.color + '15',
+                              border: `0.5px solid ${entry.fefoPreview.color}80`,
+                              borderRadius: 6,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 6
+                            }}>
+                              <div style={{ fontSize: 10, fontWeight: 600, color: entry.fefoPreview.color }}>
+                                {entry.fefoPreview.label}
+                              </div>
+                              <div style={{ fontSize: 9, color: '#5F7A6A', flex: 1 }}>
+                                {entry.fefoPreview.desc}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      
+                      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                        <button onClick={() => closeRet(item.docId)} className="btn sm" style={{ flex: 1 }}>
+                          ยกเลิก
+                        </button>
+                        <button onClick={() => submitReturn(item)} className="btn primary sm" style={{ flex: 1 }}>
+                          ยืนยัน Return + อยู่ตำแหน่งไหนวางกลับ
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )
             }
