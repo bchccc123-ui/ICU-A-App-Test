@@ -1789,6 +1789,7 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [pendingDeleteId, setPendingDeleteId] = React.useState(null)
   const [retStates, setRetStates] = React.useState({})
+  const [returnOverlay, setReturnOverlay] = React.useState(null) // { drugName, lots: [{position, total, expiry, color, qty}] }
 
   const getHoursSince = (timestamp) => {
     if (!timestamp) return 0
@@ -1917,29 +1918,108 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
         
         const updated = { ...e, [field]: val }
         
-        // Calculate FEFO preview when EXP is entered
-        if ((field === 'expM' || field === 'expY' || field === 'fullDate') && drugId) {
+        return updated
+      })
+      
+      // Recalculate FEFO for ALL entries after any update
+      const finalEntries = updatedEntries.map(entry => {
+        if ((entry.expM && entry.expY) || entry.fullDate) {
           const dl = drugsWithStock()
           const drug = dl.find(d => d.id == drugId)
-          if (drug?.fullDateExp && updated.fullDate) {
-            updated.fefoPreview = calculateFEFO(drugId, updated.fullDate)
-          } else if (!drug?.fullDateExp && updated.expM && updated.expY) {
-            const lastDay = new Date(+updated.expY, +updated.expM, 0).getDate()
-            const expiry = `${updated.expY}-${String(updated.expM).padStart(2,'0')}-${lastDay}`
-            updated.fefoPreview = calculateFEFO(drugId, expiry)
+          
+          let expiry
+          if (drug?.fullDateExp && entry.fullDate) {
+            expiry = entry.fullDate
+          } else if (!drug?.fullDateExp && entry.expM && entry.expY) {
+            const lastDay = new Date(+entry.expY, +entry.expM, 0).getDate()
+            expiry = `${entry.expY}-${String(entry.expM).padStart(2,'0')}-${lastDay}`
           } else {
-            updated.fefoPreview = null
+            return { ...entry, fefoPreview: null }
           }
+          
+          // Calculate FEFO considering ALL returned lots
+          const allReturnedLots = updatedEntries
+            .filter(e => e.id !== entry.id && ((e.expM && e.expY) || e.fullDate))
+            .map(e => {
+              if (drug?.fullDateExp && e.fullDate) {
+                return e.fullDate
+              } else if (!drug?.fullDateExp && e.expM && e.expY) {
+                const lastDay = new Date(+e.expY, +e.expM, 0).getDate()
+                return `${e.expY}-${String(e.expM).padStart(2,'0')}-${lastDay}`
+              }
+              return null
+            })
+            .filter(Boolean)
+          
+          return { ...entry, fefoPreview: calculateFEFOWithReturns(drugId, expiry, allReturnedLots) }
         }
-        
-        return updated
+        return { ...entry, fefoPreview: null }
       })
       
       return {
         ...prev,
-        [docId]: { ...state, entries: updatedEntries }
+        [docId]: { ...state, entries: finalEntries }
       }
     })
+  }
+  
+  // Calculate FEFO including other returned lots
+  const calculateFEFOWithReturns = (drugId, expiry, otherReturnedLots = []) => {
+    if (!drugId || !expiry) return null
+    
+    const existingLots = lots
+      .filter(l => l.drugId == drugId && l.qty > 0)
+      .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+    
+    const dir = getDrugDir(drugId)
+    
+    // Combine existing + all returned lots (including this one)
+    const allLots = [
+      ...existingLots.map(l => ({ expiry: l.expiry, isNew: false })),
+      ...otherReturnedLots.map(exp => ({ expiry: exp, isNew: false })),
+      { expiry, isNew: true }
+    ].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+    
+    const total = allLots.length
+    const newIndex = allLots.findIndex(l => l.isNew)
+    
+    if (total === 1) {
+      return { 
+        label: `🟣 วางตำแหน่งที่ 1 (lot แรก)`, 
+        color: '#9C27B0', 
+        desc: 'lot แรก',
+        position: 1,
+        total: 1
+      }
+    }
+    
+    let position, label, color, positionText
+    
+    if (dir === 'rtl') {
+      position = newIndex + 1
+      positionText = position === 1 ? 'ขวาสุด' : position === total ? 'ซ้ายสุด' : `ที่ ${position} นับจากขวา`
+    } else if (dir === 'fb') {
+      position = newIndex + 1
+      positionText = position === 1 ? 'หน้าสุด' : position === total ? 'หลังสุด' : `ที่ ${position} นับจากหน้า`
+    } else {
+      position = newIndex + 1
+      positionText = position === 1 ? 'ซ้ายสุด' : position === total ? 'ขวาสุด' : `ที่ ${position} นับจากซ้าย`
+    }
+    
+    const newDate = new Date(expiry)
+    const fefoDate = new Date(allLots[0].expiry)
+    const isBeforeFefo = newDate <= fefoDate
+    
+    color = isBeforeFefo ? '#4CAF50' : '#F44336'
+    label = isBeforeFefo ? `🟢 วาง${positionText}` : `🔴 วาง${positionText}`
+    
+    return { 
+      label, 
+      color, 
+      desc: `จาก ${total} ตำแหน่ง`,
+      position,
+      total
+    }
   }
   
   const submitReturn = async (withdrawal) => {
@@ -1954,6 +2034,23 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
       const drug = dl.find(d => d.id == withdrawal.drugId)
       if (!drug) throw new Error('ไม่พบข้อมูลยา')
       
+      // Build overlay data before saving
+      const overlayLots = validEntries.map(entry => {
+        const expiry = state.useFull
+          ? entry.fullDate
+          : `${entry.expY}-${String(entry.expM).padStart(2,'0')}-${new Date(+entry.expY,+entry.expM,0).getDate()}`
+        
+        return {
+          qty: entry.qty,
+          expiry,
+          position: entry.fefoPreview?.position || 1,
+          total: entry.fefoPreview?.total || 1,
+          color: entry.fefoPreview?.color || '#9C27B0',
+          label: entry.fefoPreview?.label || 'วางตำแหน่งที่ 1'
+        }
+      }).sort((a, b) => a.position - b.position) // Sort by position
+      
+      // Save to database
       for (const entry of validEntries) {
         const newExpiry = state.useFull
           ? entry.fullDate || '2099-12-31'
@@ -1979,8 +2076,13 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
         return_timestamp: Timestamp.now()
       })
       
+      // Show overlay instead of alert
+      setReturnOverlay({
+        drugName: withdrawal.drugName,
+        lots: overlayLots
+      })
+      
       closeRet(withdrawal.docId)
-      alert('✅ คืนยาสำเร็จ!')
     } catch (e) {
       alert('เกิดข้อผิดพลาด: ' + e.message)
     }
@@ -2070,7 +2172,7 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
                   
                   {!rs?.open && (
                     <button onClick={() => openRet(item.docId, item.drugId)} className="btn primary full sm">
-                      ยืนยัน Return + อยู่ตำแหน่งไหนวางกลับ
+                      ยืนยัน Return + ดูตำแหน่งการวาง
                     </button>
                   )}
                   
@@ -2087,7 +2189,7 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
                       </div>
                       
                       <div style={{ fontSize: 11, color: '#5F7A6A', marginBottom: 8, padding: '6px 10px', background: '#E3F2FD', borderRadius: 6 }}>
-                        💡 FEFO ทำงาน: 03/2027
+                        💡 FEFO ปัจจุบัน: 03/2027
                       </div>
                       
                       {rs.entries.map((entry, idx) => (
@@ -2167,7 +2269,7 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
                           ยกเลิก
                         </button>
                         <button onClick={() => submitReturn(item)} className="btn primary sm" style={{ flex: 1 }}>
-                          ยืนยัน Return + อยู่ตำแหน่งไหนวางกลับ
+                          ยืนยัน Return + ดูตำแหน่งการวาง
                         </button>
                       </div>
                     </div>
@@ -2178,8 +2280,115 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
           })}
         </>
       )}
+      
+      {/* Return Success Overlay - Restock Style */}
+      {returnOverlay && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.75)', zIndex: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#1A2E25', borderRadius: 16, padding: '24px 20px', width: '100%', maxWidth: 400, color: '#fff' }}>
+            <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{returnOverlay.drugName}</div>
+            <div style={{ fontSize: 12, color: '#9FE1CB', marginBottom: 20 }}>
+              {returnOverlay.lots.length === 1 ? '→ เข้า' : `→ ชำระ ${returnOverlay.lots.length} lot`}
+            </div>
+            
+            {/* Lot Cards */}
+            <div style={{ marginBottom: 16 }}>
+              {returnOverlay.lots.map((lot, idx) => {
+                const isGreen = lot.color === '#4CAF50'
+                const isPurple = lot.color === '#9C27B0'
+                const bgColor = isGreen ? '#1B5E20' : isPurple ? '#4A148C' : '#B71C1C'
+                const borderColor = isGreen ? '#4CAF50' : isPurple ? '#9C27B0' : '#F44336'
+                
+                return (
+                  <div key={idx} style={{ 
+                    background: bgColor, 
+                    border: `1.5px solid ${borderColor}`, 
+                    borderRadius: 12, 
+                    padding: '12px 14px', 
+                    marginBottom: 8 
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <div style={{ 
+                        fontSize: 11, 
+                        fontWeight: 600, 
+                        color: '#fff',
+                        background: 'rgba(255,255,255,0.15)',
+                        padding: '3px 10px',
+                        borderRadius: 6
+                      }}>
+                        {lot.position === 1 ? '▶ lot 1' : `▶ lot ${lot.position}`}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#E0EAE5' }}>
+                        {lot.qty} amp · อัก {lot.qty > 1 ? `${lot.qty} วัน` : '1 วัน'}
+                      </div>
+                    </div>
+                    
+                    <div style={{ 
+                      fontSize: 13, 
+                      fontWeight: 600, 
+                      color: '#fff',
+                      marginBottom: 4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6
+                    }}>
+                      <span>📍</span>
+                      <span>{lot.label.replace(/🟢|🔴|🟣/g, '').trim()}</span>
+                    </div>
+                    
+                    <div style={{ fontSize: 10, color: '#C8DDD6' }}>
+                      {lot.total > 1 ? `ระหว่าง EXP ${formatExpiry(lot.expiry)} และ ${formatExpiry(getOtherLotExp(returnOverlay.lots, idx))}` : `EXP ${formatExpiry(lot.expiry)}`}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            
+            {/* Summary */}
+            <div style={{ 
+              background: 'rgba(159, 225, 203, 0.15)', 
+              border: '1px solid rgba(159, 225, 203, 0.3)',
+              borderRadius: 10, 
+              padding: '10px 12px',
+              marginBottom: 16,
+              fontSize: 11,
+              color: '#9FE1CB',
+              textAlign: 'center'
+            }}>
+              💡 ยอดคงเหลิน EXP — 3 lot รวม
+            </div>
+            
+            <button 
+              onClick={() => setReturnOverlay(null)}
+              style={{ 
+                width: '100%', 
+                padding: '12px', 
+                background: '#9FE1CB', 
+                border: 'none', 
+                borderRadius: 10, 
+                fontSize: 14, 
+                fontWeight: 600, 
+                color: '#1A2E25',
+                cursor: 'pointer'
+              }}>
+              ✓ รับทราบ — วางยาแล้วปิดรายการ
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
+  
+  // Helper functions for overlay
+  const formatExpiry = (expiry) => {
+    if (!expiry) return ''
+    const [year, month, day] = expiry.split('-')
+    return `${month}/${year}`
+  }
+  
+  const getOtherLotExp = (lots, currentIdx) => {
+    const otherLot = lots.find((l, idx) => idx !== currentIdx)
+    return otherLot ? otherLot.expiry : lots[currentIdx].expiry
+  }
 }
 
 function QuickUseModal({ open, onClose, drugsWithStock, lots, nurses, db, initDrug }) {
