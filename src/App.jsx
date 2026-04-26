@@ -960,6 +960,8 @@ export default function App() {
               lots={lots}
               drugsWithStock={drugsWithStock}
               getDrugDir={getDrugDir}
+              setPutaway={setPutaway}
+              calcPutaway={calcPutaway}
             />
           )}
           {curTab === 'setting' && (
@@ -1765,7 +1767,7 @@ function ConfirmModal({ open, title, message, icon, onConfirm, onCancel, confirm
 
 
 /* ═══ PENDING VIEW TAB ═══ */
-function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceModal, setMissingReturnModal, fmtDTsafe, lots, drugsWithStock, getDrugDir }) {
+function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceModal, setMissingReturnModal, fmtDTsafe, lots, drugsWithStock, getDrugDir, setPutaway, calcPutaway }) {
   const pending = pendingSyncs.filter(p => p.status === 'pending')
   
   // รวม Stock Returns (withdrawals ที่ยังไม่ได้คืน และไม่มี pending_sync_id)
@@ -1789,7 +1791,6 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [pendingDeleteId, setPendingDeleteId] = React.useState(null)
   const [retStates, setRetStates] = React.useState({})
-  const [returnOverlay, setReturnOverlay] = React.useState(null) // { drugName, lots: [{position, total, expiry, color, qty}] }
 
   const getHoursSince = (timestamp) => {
     if (!timestamp) return 0
@@ -2034,53 +2035,67 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
       const drug = dl.find(d => d.id == withdrawal.drugId)
       if (!drug) throw new Error('ไม่พบข้อมูลยา')
       
-      // Build overlay data before saving
-      const overlayLots = validEntries.map(entry => {
-        const expiry = state.useFull
-          ? entry.fullDate
-          : `${entry.expY}-${String(entry.expM).padStart(2,'0')}-${new Date(+entry.expY,+entry.expM,0).getDate()}`
-        
-        return {
-          qty: entry.qty,
-          expiry,
-          position: entry.fefoPreview?.position || 1,
-          total: entry.fefoPreview?.total || 1,
-          color: entry.fefoPreview?.color || '#9C27B0',
-          label: entry.fefoPreview?.label || 'วางตำแหน่งที่ 1'
-        }
-      }).sort((a, b) => a.position - b.position) // Sort by position
-      
-      // Save to database
+      // บันทึกทุก lot ลง Firebase ก่อน
       for (const entry of validEntries) {
-        const newExpiry = state.useFull
+        const iso = state.useFull
           ? entry.fullDate || '2099-12-31'
           : (entry.expM && entry.expY
-            ? `${entry.expY}-${String(entry.expM).padStart(2,'0')}-${new Date(+entry.expY,+entry.expM,0).getDate()}`
+            ? myToISO(entry.expM, entry.expY)
             : '2099-12-31')
         
         await addDoc(collection(db, 'lots'), {
           drugId: drug.id,
           qty: entry.qty,
-          expiry: newExpiry,
+          expiry: iso,
           addedAt: Timestamp.now(),
           source: 'return',
           loaned: false
         })
       }
       
+      // Update withdrawal
+      const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
       await updateDoc(doc(db, 'withdrawals', withdrawal.docId), {
         returned: true,
-        retExp: validEntries.map(e => 
-          state.useFull ? e.fullDate : `${e.expY}-${String(e.expM).padStart(2,'0')}`
-        ).join(', '),
+        retExp: firstIso,
         return_timestamp: Timestamp.now()
       })
       
-      // Show overlay instead of alert
-      setReturnOverlay({
-        drugName: withdrawal.drugName,
-        lots: overlayLots
-      })
+      // แสดง PutawayOverlay แบบเดียวกับ restock
+      if (validEntries.length > 0) {
+        if (drug?.singleStock) {
+          const group = STORAGE_GROUPS.find(g => g.id === drug.groupId)
+          const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
+          setPutaway({ 
+            drug, 
+            qty: validEntries[0].qty, 
+            expiry: firstIso, 
+            context: 'return', 
+            singleStock: true, 
+            groupName: group?.name || '', 
+            groupIcon: group?.icon || '📦' 
+          })
+        } else {
+          // Multi-lot return: ส่ง returnLots array
+          const returnLots = validEntries
+            .map(e => ({ 
+              expiry: e.fullDate || myToISO(e.expM, e.expY), 
+              qty: e.qty 
+            }))
+            .filter(e => e.expiry)
+            .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+          
+          const firstIso = returnLots[0].expiry
+          const pa = calcPutaway(withdrawal.drugId, firstIso)
+          
+          setPutaway({ 
+            drug, 
+            returnLots, 
+            pa, 
+            context: 'return' 
+          })
+        }
+      }
       
       closeRet(withdrawal.docId)
     } catch (e) {
@@ -2280,115 +2295,8 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
           })}
         </>
       )}
-      
-      {/* Return Success Overlay - Restock Style */}
-      {returnOverlay && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.75)', zIndex: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div style={{ background: '#1A2E25', borderRadius: 16, padding: '24px 20px', width: '100%', maxWidth: 400, color: '#fff' }}>
-            <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{returnOverlay.drugName}</div>
-            <div style={{ fontSize: 12, color: '#9FE1CB', marginBottom: 20 }}>
-              {returnOverlay.lots.length === 1 ? '→ เข้า' : `→ ชำระ ${returnOverlay.lots.length} lot`}
-            </div>
-            
-            {/* Lot Cards */}
-            <div style={{ marginBottom: 16 }}>
-              {returnOverlay.lots.map((lot, idx) => {
-                const isGreen = lot.color === '#4CAF50'
-                const isPurple = lot.color === '#9C27B0'
-                const bgColor = isGreen ? '#1B5E20' : isPurple ? '#4A148C' : '#B71C1C'
-                const borderColor = isGreen ? '#4CAF50' : isPurple ? '#9C27B0' : '#F44336'
-                
-                return (
-                  <div key={idx} style={{ 
-                    background: bgColor, 
-                    border: `1.5px solid ${borderColor}`, 
-                    borderRadius: 12, 
-                    padding: '12px 14px', 
-                    marginBottom: 8 
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                      <div style={{ 
-                        fontSize: 11, 
-                        fontWeight: 600, 
-                        color: '#fff',
-                        background: 'rgba(255,255,255,0.15)',
-                        padding: '3px 10px',
-                        borderRadius: 6
-                      }}>
-                        {lot.position === 1 ? '▶ lot 1' : `▶ lot ${lot.position}`}
-                      </div>
-                      <div style={{ fontSize: 10, color: '#E0EAE5' }}>
-                        {lot.qty} amp · อัก {lot.qty > 1 ? `${lot.qty} วัน` : '1 วัน'}
-                      </div>
-                    </div>
-                    
-                    <div style={{ 
-                      fontSize: 13, 
-                      fontWeight: 600, 
-                      color: '#fff',
-                      marginBottom: 4,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6
-                    }}>
-                      <span>📍</span>
-                      <span>{lot.label.replace(/🟢|🔴|🟣/g, '').trim()}</span>
-                    </div>
-                    
-                    <div style={{ fontSize: 10, color: '#C8DDD6' }}>
-                      {lot.total > 1 ? `ระหว่าง EXP ${formatExpiry(lot.expiry)} และ ${formatExpiry(getOtherLotExp(returnOverlay.lots, idx))}` : `EXP ${formatExpiry(lot.expiry)}`}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-            
-            {/* Summary */}
-            <div style={{ 
-              background: 'rgba(159, 225, 203, 0.15)', 
-              border: '1px solid rgba(159, 225, 203, 0.3)',
-              borderRadius: 10, 
-              padding: '10px 12px',
-              marginBottom: 16,
-              fontSize: 11,
-              color: '#9FE1CB',
-              textAlign: 'center'
-            }}>
-              💡 ยอดคงเหลิน EXP — 3 lot รวม
-            </div>
-            
-            <button 
-              onClick={() => setReturnOverlay(null)}
-              style={{ 
-                width: '100%', 
-                padding: '12px', 
-                background: '#9FE1CB', 
-                border: 'none', 
-                borderRadius: 10, 
-                fontSize: 14, 
-                fontWeight: 600, 
-                color: '#1A2E25',
-                cursor: 'pointer'
-              }}>
-              ✓ รับทราบ — วางยาแล้วปิดรายการ
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   )
-  
-  // Helper functions for overlay
-  const formatExpiry = (expiry) => {
-    if (!expiry) return ''
-    const [year, month, day] = expiry.split('-')
-    return `${month}/${year}`
-  }
-  
-  const getOtherLotExp = (lots, currentIdx) => {
-    const otherLot = lots.find((l, idx) => idx !== currentIdx)
-    return otherLot ? otherLot.expiry : lots[currentIdx].expiry
-  }
 }
 
 function QuickUseModal({ open, onClose, drugsWithStock, lots, nurses, db, initDrug }) {
