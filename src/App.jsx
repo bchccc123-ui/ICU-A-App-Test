@@ -382,11 +382,14 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
             if (!isSingle && item.pa) {
               const dir = item.pa.direction || 'ltr'
               const pos = item.pa.position || 1
+              const par = item.pa.par || (item.pa.existingLots?.length || 0) + 1
               
               if (dir === 'rtl') {
                 // RTL: ขวา = EXP ก่อน
                 if (pos === 1) {
                   positionLabel = 'วางช่อง 1 (ขวาสุด)'
+                } else if (pos === par) {
+                  positionLabel = `วางช่อง ${pos} (ซ้ายสุด)`
                 } else {
                   positionLabel = `วางช่องที่ ${pos} จากขวา`
                 }
@@ -394,6 +397,8 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                 // FB: หน้า = EXP ก่อน
                 if (pos === 1) {
                   positionLabel = 'วางช่อง 1 (หน้าสุด)'
+                } else if (pos === par) {
+                  positionLabel = `วางช่อง ${pos} (หลังสุด)`
                 } else {
                   positionLabel = `วางช่องที่ ${pos} จากด้านหน้า`
                 }
@@ -401,6 +406,8 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                 // LTR: ซ้าย = EXP ก่อน
                 if (pos === 1) {
                   positionLabel = 'วางช่อง 1 (ซ้ายสุด)'
+                } else if (pos === par) {
+                  positionLabel = `วางช่อง ${pos} (ขวาสุด)`
                 } else {
                   positionLabel = `วางช่องที่ ${pos} จากซ้าย`
                 }
@@ -474,31 +481,48 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                           )}
                         </div>
                         <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                          {/* Show all lots in timeline */}
-                          {item.pa.existingLots?.map((lot, lotIdx) => {
-                            const lotPosition = lotIdx + 1
-                            const isNewPosition = lotPosition === item.pa.position
+                          {/* Build timeline array และ reverse สำหรับ RTL */}
+                          {(() => {
+                            const timelineItems = []
                             
-                            return (
-                              <React.Fragment key={lotIdx}>
-                                {isNewPosition && (
-                                  <div style={{ fontSize:9, padding:'4px 6px', borderRadius:6, background:'rgba(93,219,167,0.3)', border:'1px solid rgba(93,219,167,0.5)', color:'#5DDBA7', fontWeight:700, display:'flex', alignItems:'center', gap:2 }}>
+                            // Build timeline
+                            item.pa.existingLots?.forEach((lot, lotIdx) => {
+                              const lotPosition = lotIdx + 1
+                              const isNewPosition = lotPosition === item.pa.position
+                              
+                              if (isNewPosition) {
+                                timelineItems.push(
+                                  <div key={`new-${lotIdx}`} style={{ fontSize:9, padding:'4px 6px', borderRadius:6, background:'rgba(93,219,167,0.3)', border:'1px solid rgba(93,219,167,0.5)', color:'#5DDBA7', fontWeight:700, display:'flex', alignItems:'center', gap:2 }}>
                                     <span>📍</span>
                                     <span>วาง</span>
                                   </div>
-                                )}
-                                <div style={{ fontSize:9, padding:'4px 6px', borderRadius:6, background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', color:'rgba(255,255,255,0.6)' }}>
+                                )
+                              }
+                              
+                              timelineItems.push(
+                                <div key={lotIdx} style={{ fontSize:9, padding:'4px 6px', borderRadius:6, background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', color:'rgba(255,255,255,0.6)' }}>
                                   {fmtMY(lot.expiry)}
                                 </div>
-                              </React.Fragment>
-                            )
-                          })}
-                          {item.pa.position === (item.pa.existingLots?.length || 0) + 1 && (
-                            <div style={{ fontSize:9, padding:'4px 6px', borderRadius:6, background:'rgba(93,219,167,0.3)', border:'1px solid rgba(93,219,167,0.5)', color:'#5DDBA7', fontWeight:700, display:'flex', alignItems:'center', gap:2 }}>
-                              <span>📍</span>
-                              <span>วาง</span>
-                            </div>
-                          )}
+                              )
+                            })
+                            
+                            // Add "วาง" at the end if position = last
+                            if (item.pa.position === (item.pa.existingLots?.length || 0) + 1) {
+                              timelineItems.push(
+                                <div key="new-last" style={{ fontSize:9, padding:'4px 6px', borderRadius:6, background:'rgba(93,219,167,0.3)', border:'1px solid rgba(93,219,167,0.5)', color:'#5DDBA7', fontWeight:700, display:'flex', alignItems:'center', gap:2 }}>
+                                  <span>📍</span>
+                                  <span>วาง</span>
+                                </div>
+                              )
+                            }
+                            
+                            // Reverse สำหรับ RTL
+                            if (item.pa.direction === 'rtl') {
+                              return timelineItems.reverse()
+                            }
+                            
+                            return timelineItems
+                          })()}
                         </div>
                       </div>
                     )}
