@@ -3764,42 +3764,6 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
             <option value="">-- เลือกเวร --</option>
             {SHIFTS.map(s=><option key={s}>{s}</option>)}
           </select>
-
-          {/* ── อุณหภูมิตู้เย็น ── */}
-          <div className="lbl" style={{marginTop:12}}>🌡️ อุณหภูมิตู้เย็นยา (°C)</div>
-          <div style={{position:'relative'}}>
-            <input
-              className="inp"
-              type="number"
-              inputMode="decimal"
-              step="0.1"
-              placeholder="เช่น 4.5"
-              value={fridgeTemp}
-              onChange={e => setFridgeTemp(e.target.value)}
-              style={{paddingRight:44}}
-            />
-            <span style={{
-              position:'absolute', right:11, top:'50%', transform:'translateY(-50%)',
-              fontSize:12, color:'#8BA898', pointerEvents:'none', fontWeight:500
-            }}>°C</span>
-          </div>
-          {fridgeTemp !== '' && (() => {
-            const t = Number(fridgeTemp)
-            const ok = t >= 2 && t <= 8
-            return (
-              <div style={{
-                marginTop:5, borderRadius:8, padding:'6px 11px', fontSize:12, fontWeight:500,
-                display:'flex', alignItems:'center', gap:6,
-                background: ok ? '#E1F5EE' : '#FCEBEB',
-                color:      ok ? '#0F6E56' : '#A32D2D',
-                border:    `0.5px solid ${ok ? '#9FE1CB' : '#F7C1C1'}`
-              }}>
-                {ok
-                  ? <>✓ อุณหภูมิ {fridgeTemp}°C อยู่ในเกณฑ์ปกติ (2–8°C)</>
-                  : <>⚠️ อุณหภูมิ {fridgeTemp}°C <b>นอกเกณฑ์</b> — โปรดตรวจสอบตู้เย็นทันที!</>}
-              </div>
-            )
-          })()}
           {hasDraft && (
             <div style={{marginTop:10,background:'#E1F5EE',borderRadius:8,padding:'8px 12px',border:'0.5px solid #9FE1CB',fontSize:11,color:'#0F6E56'}}>
               📋 พบข้อมูลที่บันทึกไว้ก่อนหน้า ({Object.keys(counts).length} รายการ, ยืนยันแล้ว {Object.keys(confirmedGroups).length} location)
@@ -3865,8 +3829,8 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
           <div style={{fontWeight:500,fontSize:13}}>{nurse}</div>
           <div style={{fontSize:11,color:'#5F7A6A'}}>เวร{shift} · แก้ไข {changed} รายการ · ยืนยันแล้ว {totalConfirmed}/{totalGroups} location</div>
         </div>
-        <button className="btn primary sm" onClick={handleSubmitCount} disabled={saving||!allConfirmed}
-          style={{opacity:allConfirmed?1:0.5}}>
+        <button className="btn primary sm" onClick={handleSubmitCount} disabled={saving||!allConfirmed||fridgeTemp===''}
+          style={{opacity:(allConfirmed&&fridgeTemp!=='')?1:0.5}}>
           {saving?'กำลังบันทึก...':'ตรวจสอบและบันทึก'}
         </button>
       </div>
@@ -3875,6 +3839,48 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
       <div style={{height:6,background:'#E0EAE5',borderRadius:3,marginBottom:10,overflow:'hidden'}}>
         <div style={{height:'100%',width:`${Math.round(totalConfirmed/Math.max(totalGroups,1)*100)}%`,background:'#0F6E56',borderRadius:3,transition:'width .4s'}}/>
       </div>
+
+      {/* ── อุณหภูมิตู้เย็น card ── */}
+      {(() => {
+        const t = fridgeTemp !== '' ? Number(fridgeTemp) : null
+        const tooLow  = t !== null && t < 2
+        const tooHigh = t !== null && t > 8
+        const ok      = t !== null && !tooLow && !tooHigh
+        const missing = fridgeTemp === ''
+        return (
+          <div style={{
+            borderRadius:10, padding:'10px 14px', marginBottom:8,
+            display:'flex', alignItems:'center', gap:10,
+            background: missing ? '#FFF8E1' : ok ? '#E1F5EE' : '#FCEBEB',
+            border: `0.5px solid ${missing ? '#FFD54F' : ok ? '#9FE1CB' : '#F7C1C1'}`
+          }}>
+            <span style={{fontSize:20, flexShrink:0}}>🌡️</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:12, fontWeight:600, color: missing ? '#8B6900' : ok ? '#0F6E56' : '#A32D2D', marginBottom:4}}>
+                {missing ? 'กรุณากรอกอุณหภูมิตู้เย็นก่อนยืนยัน' : ok ? `✅ อุณหภูมิ ${fridgeTemp}°C อยู่ในเกณฑ์ปกติ (2–8°C)` : tooHigh ? `⚠️ อุณหภูมิ ${fridgeTemp}°C สูงกว่าปกติ — โปรดตรวจสอบตู้เย็นทันที!` : `⚠️ อุณหภูมิ ${fridgeTemp}°C ต่ำกว่าปกติ — โปรดตรวจสอบตู้เย็นทันที!`}
+              </div>
+              <div style={{position:'relative', maxWidth:160}}>
+                <input
+                  className="inp"
+                  type="number"
+                  inputMode="decimal"
+                  step="0.1"
+                  placeholder="เช่น 4.5"
+                  value={fridgeTemp}
+                  onChange={e => setFridgeTemp(e.target.value)}
+                  style={{
+                    paddingRight:36,
+                    background: missing ? '#fff' : ok ? '#F0FAF6' : '#FEF2F2',
+                    borderColor: missing ? '#FFD54F' : ok ? '#9FE1CB' : '#F7C1C1',
+                    fontSize:13, fontWeight:500
+                  }}
+                />
+                <span style={{position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'#8BA898',pointerEvents:'none'}}>°C</span>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {!allConfirmed && <div className="info" style={{marginBottom:8}}>กรุณายืนยันครบทุก location ก่อนกดบันทึก</div>}
 
@@ -4192,8 +4198,8 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
       })()}
 
       {allConfirmed && (
-        <button className="btn primary full" onClick={handleSubmitCount} disabled={saving} style={{marginTop:8}}>
-          {saving?'กำลังบันทึก...':'✓ ตรวจสอบและบันทึกทั้งหมด'}
+        <button className="btn primary full" onClick={handleSubmitCount} disabled={saving||fridgeTemp===''} style={{marginTop:8,opacity:fridgeTemp!==''?1:0.5}}>
+          {saving?'กำลังบันทึก...':fridgeTemp===''?'กรุณากรอกอุณหภูมิตู้เย็นก่อนบันทึก':'✓ ตรวจสอบและบันทึกทั้งหมด'}
         </button>
       )}
     </>
@@ -5518,7 +5524,9 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
         day:'2-digit', month:'2-digit', year:'2-digit',
         hour:'2-digit', minute:'2-digit'
       })
-      const status = c.fridgeTempOk === false ? '⚠️ นอกเกณฑ์' : '✓ ปกติ'
+      const status = c.fridgeTempOk === false
+        ? (c.fridgeTemp > 8 ? '⚠️ สูงกว่าปกติ' : '⚠️ ต่ำกว่าปกติ')
+        : '✅ ปกติ'
       csv += `"${dateStr}","${c.shift||''}","${c.nurse||''}",${c.fridgeTemp},"${status}"\r\n`
     })
 
