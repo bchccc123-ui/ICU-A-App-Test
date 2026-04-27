@@ -376,7 +376,36 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
             const itemDrug = item.drug
             const isSingle = item.singleStock
             const numReturningLots = item.returnLots?.length || 1
-            const isFefo = item.pa?.position === 1
+            
+            // คำนวณข้อความตำแหน่ง
+            let positionLabel = ''
+            if (!isSingle && item.pa) {
+              const dir = item.pa.direction || 'ltr'
+              const pos = item.pa.position || 1
+              
+              if (dir === 'rtl') {
+                // RTL: ขวา = EXP ก่อน
+                if (pos === 1) {
+                  positionLabel = 'วางช่อง 1 (ขวาสุด)'
+                } else {
+                  positionLabel = `วางช่องที่ ${pos} จากขวา`
+                }
+              } else if (dir === 'fb') {
+                // FB: หน้า = EXP ก่อน
+                if (pos === 1) {
+                  positionLabel = 'วางช่อง 1 (หน้าสุด)'
+                } else {
+                  positionLabel = `วางช่องที่ ${pos} จากด้านหน้า`
+                }
+              } else {
+                // LTR: ซ้าย = EXP ก่อน
+                if (pos === 1) {
+                  positionLabel = 'วางช่อง 1 (ซ้ายสุด)'
+                } else {
+                  positionLabel = `วางช่องที่ ${pos} จากซ้าย`
+                }
+              }
+            }
             
             return (
               <div key={idx} style={{ background:'rgba(0,0,0,0.25)', borderRadius:12, padding:12, border:'1px solid rgba(255,255,255,0.1)' }}>
@@ -415,23 +444,34 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                 ) : (
                   // Multi-lot
                   <div style={{ background:'rgba(93,219,167,0.08)', border:'1px solid rgba(93,219,167,0.2)', borderRadius:8, padding:10 }}>
-                    {/* Description */}
-                    <div style={{ fontSize:12, color:'rgba(255,255,255,0.7)', marginBottom:8 }}>
-                      {numReturningLots > 1 
-                        ? `รายละเอียด ${numReturningLots} รายการ` 
-                        : `รายละเอียด 1 ${isFefo ? '(พร้อมส่ง)' : '(พร้อมส่ง)'}`
-                      }
+                    {/* Position Label */}
+                    <div style={{ fontSize:12, color:'#5DDBA7', fontWeight:600, marginBottom:4 }}>
+                      {positionLabel}
                     </div>
-                    <div style={{ fontSize:10, color:'rgba(255,255,255,0.5)', marginBottom:6 }}>
-                      EXP ใหม่กว่าของเดิม - อยู่ตำแหน่งตรง (พร้อมส่ง/ส่อง)
+                    <div style={{ fontSize:10, color:'rgba(255,255,255,0.5)', marginBottom:8 }}>
+                      EXP ใหม่กว่าของเดิม - อยู่ตำแหน่งตรง
                     </div>
                     
                     {/* Timeline */}
                     {item.pa && (
                       <div style={{ marginTop:8 }}>
                         <div style={{ fontSize:9, color:'rgba(255,255,255,0.4)', marginBottom:4, display:'flex', justifyContent:'space-between' }}>
-                          <span>← {item.pa.direction === 'rtl' ? 'ขวา' : item.pa.direction === 'fb' ? 'หน้า' : 'ซ้าย'} (หยิบก่อน)</span>
-                          <span>{item.pa.direction === 'rtl' ? 'ซ้าย' : item.pa.direction === 'fb' ? 'หลัง' : 'ขวา'} →</span>
+                          {item.pa.direction === 'rtl' ? (
+                            <>
+                              <span>← ซ้าย</span>
+                              <span>ขวา (หยิบก่อน) →</span>
+                            </>
+                          ) : item.pa.direction === 'fb' ? (
+                            <>
+                              <span>← หน้า (หยิบก่อน)</span>
+                              <span>หลัง →</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>← ซ้าย (หยิบก่อน)</span>
+                              <span>ขวา →</span>
+                            </>
+                          )}
                         </div>
                         <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
                           {/* Show all lots in timeline */}
