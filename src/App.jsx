@@ -1786,7 +1786,10 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         
         // Group lots by drugId for overlay
         if (!drugGroups[drug.id]) {
-          drugGroups[drug.id] = { drug, lots: [], lotsAfterFEFO: lotsAfterFEFO[drug.id] || [] }
+          drugGroups[drug.id] = { drug, lots: [], lotsAfterFEFO: cumulativeLotsAfterFEFO[drug.id] || lotsAfterFEFO[drug.id] || [] }
+        } else {
+          // ✓ FIX: Update lotsAfterFEFO ทุกรอบเพื่อให้ได้ค่าล่าสุด
+          drugGroups[drug.id].lotsAfterFEFO = cumulativeLotsAfterFEFO[drug.id] || lotsAfterFEFO[drug.id] || []
         }
         drugGroups[drug.id].lots.push({ expiry: newExpiry, qty: item.qty })
       }
@@ -1809,9 +1812,15 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         // ใช้ getDrugDir() เหมือน calculateFEFOWithReturns
         const dir = getDrugDir(drugId)
         
+        // ✓ FIX: Format existingLots ให้มี 'exp' field สำหรับ PutawayOverlay
+        const formattedExistingLots = existingLots.map(l => ({
+          exp: fmtMY(l.expiry),
+          expiry: l.expiry
+        }))
+        
         // คำนวณ position โดยใช้ Par (จำนวนชิ้นที่ควรมี)
         // แทนการนับ lots
-        const sorted = [...existingLots, { expiry, isNew: true }]
+        const sorted = [...formattedExistingLots, { expiry, isNew: true }]
           .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
         
         const newIndex = sorted.findIndex(l => l.isNew)
@@ -1820,7 +1829,7 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         return {
           direction: dir,
           position,
-          existingLots: existingLots,
+          existingLots: formattedExistingLots,  // ✓ ส่ง formatted version
           par: drug.par  // ← เพิ่ม par เพื่อให้ overlay ใช้
         }
       }
