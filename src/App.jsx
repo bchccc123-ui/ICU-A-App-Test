@@ -3304,6 +3304,7 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
   const [step, setStep]       = useState('setup')
   const [nurse, setNurse]     = useState(''); const [nQ, setNQ] = useState(''); const [nOpen, setNOpen] = useState(false)
   const [shift, setShift]     = useState('')
+  const [fridgeTemp, setFridgeTemp] = useState('')
   const [counts, setCounts]   = useState({})
   const [search, setSearch]   = useState('')
   const [saving, setSaving]   = useState(false)
@@ -3339,6 +3340,7 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
       const isStaleDay = d.startTs && new Date(d.startTs).toDateString() !== new Date().toDateString()
       if (d.nurse) { setNurse(d.nurse); setNQ(d.nurse) }
       if (d.shift) setShift(d.shift)
+      if (d.fridgeTemp !== undefined) setFridgeTemp(d.fridgeTemp)
       if (d.counts) setCounts(d.counts)
       if (d.confirmedGroups) setConfirmedGroups(d.confirmedGroups)
       if (d.expandedGroup) setExpandedGroup(d.expandedGroup)
@@ -3367,13 +3369,13 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
     if (!nurse && !shift && Object.keys(counts).length === 0) return
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify({
-        nurse, shift, counts, confirmedGroups, step, expandedGroup,
+        nurse, shift, fridgeTemp, counts, confirmedGroups, step, expandedGroup,
         startTs: startTs?.toMillis ? startTs.toMillis() : null,
         activeMs,
         // pausedAt จะถูก set ตอน unmount เท่านั้น — ไม่ save ที่นี่
       }))
     } catch(e) {}
-  }, [nurse, shift, counts, confirmedGroups, step, startTs, activeMs, expandedGroup, draftRestored])
+  }, [nurse, shift, fridgeTemp, counts, confirmedGroups, step, startTs, activeMs, expandedGroup, draftRestored])
 
   // ── Pause timer เมื่อ app ไป background (visibilitychange) ──
   useEffect(() => {
@@ -3419,7 +3421,7 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
     setSessionStart(null); sessionStartRef.current = null
     setPauseModal(null)
     setExpandedGroup(null); setConfirmedGroups({}); setLocResolves([]); setLocDiscModal(null)
-    setNurse(''); setNQ(''); setShift('')
+    setNurse(''); setNQ(''); setShift(''); setFridgeTemp('')
     setTimeout(() => { isResetting.current = false }, 100)
   }
 
@@ -3570,7 +3572,10 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
       const durationSec = finalActiveMs > 0 ? Math.round(finalActiveMs / 1000) : null
       const durationMin = durationSec !== null ? Math.round(durationSec / 60 * 10) / 10 : null
       await addDoc(collection(db,'checks'), {
-        nurse, shift, mode:'detailed', startTs: safeStartTs, endTs, durationSec, durationMin, ts: endTs,
+        nurse, shift,
+        fridgeTemp: fridgeTemp !== '' ? Number(fridgeTemp) : null,
+        fridgeTempOk: fridgeTemp !== '' ? (Number(fridgeTemp) >= 2 && Number(fridgeTemp) <= 8) : null,
+        mode:'detailed', startTs: safeStartTs, endTs, durationSec, durationMin, ts: endTs,
         totalDrugs, deficientCount: deficientItems.length, deficientDrugs: deficientItems,
         deficiencyRate: Math.round(deficientItems.length / totalDrugs * 1000) / 10,
         discrepancyCount: discrepancyItems.length, discrepancyItems, totalDiscrepancyUnits,
@@ -3759,6 +3764,42 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
             <option value="">-- เลือกเวร --</option>
             {SHIFTS.map(s=><option key={s}>{s}</option>)}
           </select>
+
+          {/* ── อุณหภูมิตู้เย็น ── */}
+          <div className="lbl" style={{marginTop:12}}>🌡️ อุณหภูมิตู้เย็นยา (°C)</div>
+          <div style={{position:'relative'}}>
+            <input
+              className="inp"
+              type="number"
+              inputMode="decimal"
+              step="0.1"
+              placeholder="เช่น 4.5"
+              value={fridgeTemp}
+              onChange={e => setFridgeTemp(e.target.value)}
+              style={{paddingRight:44}}
+            />
+            <span style={{
+              position:'absolute', right:11, top:'50%', transform:'translateY(-50%)',
+              fontSize:12, color:'#8BA898', pointerEvents:'none', fontWeight:500
+            }}>°C</span>
+          </div>
+          {fridgeTemp !== '' && (() => {
+            const t = Number(fridgeTemp)
+            const ok = t >= 2 && t <= 8
+            return (
+              <div style={{
+                marginTop:5, borderRadius:8, padding:'6px 11px', fontSize:12, fontWeight:500,
+                display:'flex', alignItems:'center', gap:6,
+                background: ok ? '#E1F5EE' : '#FCEBEB',
+                color:      ok ? '#0F6E56' : '#A32D2D',
+                border:    `0.5px solid ${ok ? '#9FE1CB' : '#F7C1C1'}`
+              }}>
+                {ok
+                  ? <>✓ อุณหภูมิ {fridgeTemp}°C อยู่ในเกณฑ์ปกติ (2–8°C)</>
+                  : <>⚠️ อุณหภูมิ {fridgeTemp}°C <b>นอกเกณฑ์</b> — โปรดตรวจสอบตู้เย็นทันที!</>}
+              </div>
+            )
+          })()}
           {hasDraft && (
             <div style={{marginTop:10,background:'#E1F5EE',borderRadius:8,padding:'8px 12px',border:'0.5px solid #9FE1CB',fontSize:11,color:'#0F6E56'}}>
               📋 พบข้อมูลที่บันทึกไว้ก่อนหน้า ({Object.keys(counts).length} รายการ, ยืนยันแล้ว {Object.keys(confirmedGroups).length} location)
@@ -5445,6 +5486,60 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
   const rateBg    = comp.rate >= 80 ? '#E1F5EE' : comp.rate >= 50 ? '#FAEEDA' : '#FCEBEB'
   const rateBd    = comp.rate >= 80 ? '#9FE1CB' : comp.rate >= 50 ? '#FAC775' : '#F7C1C1'
 
+  const exportFridgeTemp = () => {
+    const [fy, fm] = logMonth.split('-').map(Number)
+    const mLabel = new Date(fy, fm-1, 1).toLocaleDateString('th-TH', { month:'long', year:'numeric' })
+    // กรองเฉพาะ checks เดือนที่เลือก และมีข้อมูลอุณหภูมิ
+    const monthChecks = checks
+      .filter(c => {
+        const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
+        return ts.getFullYear() === fy && ts.getMonth()+1 === fm && c.fridgeTemp != null
+      })
+      .sort((a,b) => {
+        const ta = a.ts?.toDate ? a.ts.toDate() : new Date(a.ts)
+        const tb = b.ts?.toDate ? b.ts.toDate() : new Date(b.ts)
+        return ta - tb
+      })
+
+    let csv = `Bangkok Hospital Chanthaburi : ICU-A\r\n`
+    csv += `=== บันทึกอุณหภูมิตู้เย็นยา : ${mLabel} ===\r\n`
+    csv += `เกณฑ์ปกติ: 2–8 องศาเซลเซียส\r\n\r\n`
+
+    if (!monthChecks.length) {
+      csv += `ไม่มีข้อมูลอุณหภูมิในเดือนนี้\r\n`
+      exportCSV(`FridgeTemp_${logMonth}`, csv)
+      return
+    }
+
+    csv += `วันที่,เวร,พยาบาล,อุณหภูมิ (°C),สถานะ\r\n`
+    monthChecks.forEach(c => {
+      const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
+      const dateStr = ts.toLocaleDateString('th-TH', {
+        day:'2-digit', month:'2-digit', year:'2-digit',
+        hour:'2-digit', minute:'2-digit'
+      })
+      const status = c.fridgeTempOk === false ? '⚠️ นอกเกณฑ์' : '✓ ปกติ'
+      csv += `"${dateStr}","${c.shift||''}","${c.nurse||''}",${c.fridgeTemp},"${status}"\r\n`
+    })
+
+    // สรุปท้าย
+    const temps = monthChecks.map(c => c.fridgeTemp)
+    const avg   = Math.round(temps.reduce((s,t)=>s+t,0)/temps.length * 10) / 10
+    const minT  = Math.min(...temps)
+    const maxT  = Math.max(...temps)
+    const outCount = monthChecks.filter(c => c.fridgeTempOk === false).length
+
+    csv += `\r\n=== สรุปประจำเดือน ===\r\n`
+    csv += `จำนวนครั้งที่บันทึก,${monthChecks.length} ครั้ง\r\n`
+    csv += `อุณหภูมิเฉลี่ย,${avg} °C\r\n`
+    csv += `ต่ำสุด,${minT} °C\r\n`
+    csv += `สูงสุด,${maxT} °C\r\n`
+    csv += `ครั้งที่นอกเกณฑ์ (< 2 หรือ > 8°C),${outCount} ครั้ง\r\n`
+    csv += `อัตรานอกเกณฑ์,${monthChecks.length>0?Math.round(outCount/monthChecks.length*1000)/10:0}%\r\n`
+
+    exportCSV(`FridgeTemp_${logMonth}`, csv)
+  }
+
   const exportExpirySnapshots = () => {
     if (!expirySnapshots.length) { alert('ยังไม่มีข้อมูล Snapshot (จะบันทึกอัตโนมัติเมื่อเปิดแอปในต้นเดือนถัดไป)'); return }
     let csv = `Bangkok Hospital Chanthaburi : ICU-A\r\n`
@@ -5478,6 +5573,7 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
     { label: 'ประวัติเช็คยารายวัน (CSV)',    desc: 'ตามเดือนที่เลือกด้านบน',               fn: exportMonthLog },
     { label: 'จำนวนยาต่อ session (Matrix)',   desc: 'ยา × session — ทุกครั้งที่นับ',         fn: exportDrugCountMatrix },
     { label: 'Expiry Snapshot รายเดือน',      desc: 'ยาหมดอายุ/เกินเวลาแลก — บันทึกอัตโนมัติทุกต้นเดือน', fn: exportExpirySnapshots },
+    { label: '🌡️ อุณหภูมิตู้เย็น (รายเดือน)', desc: 'บันทึกอุณหภูมิตู้เย็นแต่ละเวร ตามเดือนที่เลือก',      fn: exportFridgeTemp },
   ]
 
   return (
