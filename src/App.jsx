@@ -4040,7 +4040,7 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
         const curYear = new Date().getFullYear()
         const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
         const thM = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
-        const years = Array.from({length:5},(_,i)=>curYear+i)
+        const years = Array.from({length:15},(_,i)=>curYear+i)
         const setMExpM = v => setLocDiscModal(prev => { const nr=[...prev.resolves]; nr[prev.rIdx]={...nr[prev.rIdx],expM:v}; return {...prev,resolves:nr} })
         const setMExpY = v => setLocDiscModal(prev => { const nr=[...prev.resolves]; nr[prev.rIdx]={...nr[prev.rIdx],expY:v}; return {...prev,resolves:nr} })
         const addMExtraLot = () => setLocDiscModal(prev => {
