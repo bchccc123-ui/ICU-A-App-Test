@@ -210,6 +210,15 @@ const fmtDsafe = d => {
   return `${dd}/${mm}/${yyyy}`
 }
 const myToISO = (m, y) => { if (!m || !y) return ''; const last = new Date(+y, +m, 0).getDate(); return `${y}-${String(m).padStart(2,'0')}-${last}` }
+// คืนค่า YYYY-MM-DD ที่ถูกต้องตาม shift logic:
+// Night Shift ที่ save หลัง 00:00 แต่ก่อน 08:00 → ย้อนวันกลับ 1 วัน (ยังเป็นเวรของวันก่อน)
+const shiftDateKey = (ts, shift) => {
+  const d = new Date(ts)
+  const isNight = (shift || '').includes('Night')
+  const h = d.getHours()
+  if (isNight && h >= 0 && h < 8) d.setDate(d.getDate() - 1)
+  return d.toISOString().slice(0, 10)
+}
 const fmtExpiry = (expiry, drug) => {
   if (!expiry || expiry === '2099-12-31') return 'ไม่มี EXP'
   if (drug?.fullDateExp) {
@@ -292,7 +301,7 @@ function MyPicker({ month, year, onMonth, onYear }) {
   const curYear = new Date().getFullYear()
   const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
   const thM = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
-  const years = Array.from({ length: 10 }, (_, i) => curYear + i)
+  const years = Array.from({ length: 15 }, (_, i) => curYear + i)
   return (
     <div className="g2">
       <div>
@@ -1052,7 +1061,7 @@ export default function App() {
 
   const alerts = getAlerts()
   const alertCount = alerts.low.length + alerts.out.length + alerts.exp.length + alerts.exchangeDue.length + alerts.exchangeOver.length
-  const unret = withdrawals.filter(w => !w.returned && !w.pending_sync_id && w.usage_type !== 'Missing_Tracked' && w.usage_type !== 'Emergency')
+  const unret = withdrawals.filter(w => !w.returned && !w.pending_sync_id && w.usage_type !== 'Missing_Tracked' && w.usage_type !== 'Missing_Unknown' && w.usage_type !== 'Emergency')
   const lastCheck = checks[0]
 
   return (
@@ -1920,7 +1929,7 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
   const curYear = new Date().getFullYear()
   const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
   const thM = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
-  const years = Array.from({length:10},(_,i)=>curYear+i)
+  const years = Array.from({length:15},(_,i)=>curYear+i)
 
   // ── Main Form ──
   return (
@@ -2508,7 +2517,7 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
               const curYear = new Date().getFullYear()
               const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
               const thM = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
-              const years = Array.from({length:10},(_,i)=>curYear+i)
+              const years = Array.from({length:15},(_,i)=>curYear+i)
               
               return (
                 <div key={item.docId} className={`pending-card ${agingClass}`}>
@@ -3464,7 +3473,7 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
         ls.forEach(l => { if (rem <= 0) { lotCuts[l.docId] = 0; return }; const cut = Math.min(l.qty, rem); lotCuts[l.docId] = cut; rem -= cut })
         list.push({ type:'cut', drug:d, counted:cnt, systemTotal, lots:ls, lotCuts, expM:'', expY:'', missingType:'', missingBed:'' })
       } else if (cnt > systemTotal) {
-        list.push({ type:'add', drug:d, counted:cnt, systemTotal, lots:ls, lotCuts:{}, expM:'', expY:'' })
+        list.push({ type:'add', drug:d, counted:cnt, systemTotal, lots:ls, lotCuts:{}, extraLots:[{ id:1, qty:cnt-systemTotal, expM:'', expY:'' }] })
       }
     })
     if (list.length === 0) { applyAll([]); return }
@@ -3482,9 +3491,28 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
   const setMissingType = (ri, v) => setResolves(prev => prev.map((r,i) => i===ri ? {...r, missingType:v, lotCuts: v==='known' ? (() => { const lc={}; let rem=prev[ri].systemTotal-prev[ri].counted; prev[ri].lots.forEach(l=>{ if(rem<=0){lc[l.docId]=0;return}; const cut=Math.min(l.qty,rem); lc[l.docId]=cut; rem-=cut }); return lc })() : prev[ri].lotCuts } : r))
   const setMissingBed = (ri, v) => setResolves(prev => prev.map((r,i) => i===ri ? {...r, missingBed:v} : r))
   const setMissingNote = (ri, v) => setResolves(prev => prev.map((r,i) => i===ri ? {...r, missingNote:v} : r))
+  
+  // Extra lots management functions
+  const addExtraLot = (ri) => setResolves(prev => prev.map((r,i) => {
+    if (i !== ri || r.type !== 'add') return r
+    const newId = r.extraLots.length > 0 ? Math.max(...r.extraLots.map(l => l.id)) + 1 : 1
+    return { ...r, extraLots: [...r.extraLots, { id: newId, qty: 1, expM: '', expY: '' }] }
+  }))
+  
+  const removeExtraLot = (ri, lotId) => setResolves(prev => prev.map((r,i) => {
+    if (i !== ri || r.type !== 'add') return r
+    if (r.extraLots.length === 1) return r
+    return { ...r, extraLots: r.extraLots.filter(l => l.id !== lotId) }
+  }))
+  
+  const updateExtraLot = (ri, lotId, field, value) => setResolves(prev => prev.map((r,i) => {
+    if (i !== ri || r.type !== 'add') return r
+    return { ...r, extraLots: r.extraLots.map(l => l.id === lotId ? { ...l, [field]: value } : l) }
+  }))
+  
   const totalCut  = r => Object.values(r.lotCuts).reduce((s,v)=>s+v, 0)
   const neededCut = r => r.systemTotal - r.counted
-  const isValid   = r => r.type==='cut' ? (r.missingType!=='' && totalCut(r)===neededCut(r) && (r.missingType!=='known' || (r.missingBed!=='' && (r.missingBed!=='other' || (r.missingNote||'').trim()!=='')))) : (r.expM!=='' && r.expY!=='')
+  const isValid   = r => r.type==='cut' ? (r.missingType!=='' && totalCut(r)===neededCut(r) && (r.missingType!=='known' || (r.missingBed!=='' && (r.missingBed!=='other' || (r.missingNote||'').trim()!=='')))) : (() => { const totalExtraQty = r.extraLots.reduce((s,l) => s + l.qty, 0); const allLotsHaveExp = r.extraLots.every(l => l.expM !== '' && l.expY !== ''); return allLotsHaveExp && totalExtraQty === (r.counted - r.systemTotal) })()
 
   const applyAll = async (rList) => {
     setSaving(true)
@@ -3555,10 +3583,13 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
               ls.forEach(l => { const cut = r.lotCuts[l.docId] || 0; if (cut > 0) batch.update(doc(db,'lots',l.docId), { qty: l.qty - cut }) })
             }
           }
-        } else if (cnt > systemTotal && r && r.expM && r.expY) {
-          const diff = cnt - systemTotal; const expiry = myToISO(r.expM, r.expY)
-          const ref = doc(collection(db,'lots'))
-          batch.set(ref, { drugId: d.id, qty: diff, expiry, note:'stock-count-add', ts: Timestamp.now() })
+        } else if (cnt > systemTotal && r && r.extraLots && r.extraLots.length > 0) {
+          for (const lot of r.extraLots) {
+            if (!lot.expM || !lot.expY) continue
+            const expiry = myToISO(lot.expM, lot.expY)
+            const ref = doc(collection(db,'lots'))
+            batch.set(ref, { drugId: d.id, qty: lot.qty, expiry, note:'stock-count-add', ts: Timestamp.now() })
+          }
         } else if (cnt > systemTotal && ls.length > 0) {
           batch.update(doc(db,'lots',ls[0].docId), { qty: ls[0].qty + (cnt - systemTotal) })
         }
@@ -3608,7 +3639,7 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
     const curYear = new Date().getFullYear()
     const months = ['01','02','03','04','05','06','07','08','09','10','11','12']
     const thM = ['Jan.','Feb.','Mar.','Apr.','May','Jun.','Jul.','Aug.','Sep.','Oct.','Nov.','Dec.']
-    const years = Array.from({length:5},(_,i)=>curYear+i)
+    const years = Array.from({length:15},(_,i)=>curYear+i)
     return (
       <>
         <div style={{fontSize:12,color:'#5F7A6A',marginBottom:8}}>ตรวจพบ {resolves.length} รายการที่ต้องยืนยัน · ({rIdx+1}/{resolves.length})</div>
@@ -4032,7 +4063,7 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
             } else if (rx.missingType==='unknown') {
               try {
                 rx.lots.forEach(async l=>{const cut=rx.lotCuts[l.docId]||0;if(cut>0)await updateDoc(doc(db,'lots',l.docId),{qty:l.qty-cut})})
-                await addDoc(collection(db,'withdrawals'),{nurse,drugId:rx.drug.id,drugName:rx.drug.name,bed:'(Unknown — Stock Count)',qty:rx.systemTotal-rx.counted,note:rx.missingNote?`(Stock Count — Missing Unknown: ${rx.missingNote})`:'(Stock Count — Missing Unknown)',returned:true,retExp:'',ts:Timestamp.now(),usage_type:'Missing_Unknown',pending_sync_id:null,reconciliation_time_minutes:null})
+                await addDoc(collection(db,'withdrawals'),{nurse,drugId:rx.drug.id,drugName:rx.drug.name,bed:'(Unknown — Stock Count)',qty:rx.systemTotal-rx.counted,note:rx.missingNote?`(Stock Count — Missing Unknown: ${rx.missingNote})`:'(Stock Count — Missing Unknown)',returned:false,retExp:'',ts:Timestamp.now(),usage_type:'Missing_Unknown',pending_sync_id:null,reconciliation_time_minutes:null})
               } catch(e){console.error('Missing_Unknown save error:',e)}
             }
           }
@@ -4159,25 +4190,65 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
                     </div>
                     
                     <div style={{fontSize:12,fontWeight:600,color:'#E65100',marginBottom:8}}>
-                      ➕ ระบุ EXP ใหม่ของยาที่เกิน {r.counted-r.systemTotal} {r.drug.unit}:
+                      ➕ ระบุยาที่เกิน {r.counted-r.systemTotal} {r.drug.unit} (แยกตาม EXP):
                     </div>
-                    <div className="g2">
-                      <div>
-                        <div className="lbl" style={{color:'#3C3489'}}>เดือน EXP</div>
-                        <select className="inp" value={r.expM} onChange={e=>setMExpM(e.target.value)}>
-                          <option value="">-- Month --</option>
-                          {months.map((m,i)=><option key={m} value={m}>{m} ({thM[i]})</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <div className="lbl" style={{color:'#3C3489'}}>EXP Year</div>
-                        <select className="inp" value={r.expY} onChange={e=>setMExpY(e.target.value)}>
-                          <option value="">-- Year --</option>
-                          {years.map(y=><option key={y} value={y}>{y}</option>)}
-                        </select>
-                      </div>
+                    
+                    {r.extraLots.map((lot, idx) => {
+                      const totalExtraQty = r.extraLots.reduce((sum, l) => sum + l.qty, 0)
+                      const maxQty = (r.counted - r.systemTotal) - (totalExtraQty - lot.qty)
+                      
+                      return (
+                        <div key={lot.id} style={{background:'rgba(230,81,0,.06)',borderRadius:8,padding:'10px 12px',marginBottom:8,border:'1.5px solid #FFB74D'}}>
+                          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                            <div style={{fontSize:12,fontWeight:600,color:'#E65100'}}>Lot เกิน {idx + 1}</div>
+                            {r.extraLots.length > 1 && (
+                              <button onClick={() => removeExtraLot(mIdx, lot.id)} style={{background:'none',border:'none',cursor:'pointer',fontSize:16,color:'#A32D2D'}}>✕</button>
+                            )}
+                          </div>
+                          
+                          <div style={{marginBottom:8}}>
+                            <div className="lbl" style={{color:'#3C3489',marginBottom:4}}>จำนวน</div>
+                            <div className="nc">
+                              <button onClick={() => updateExtraLot(mIdx, lot.id, 'qty', Math.max(1, lot.qty - 1))}>−</button>
+                              <span>{lot.qty}</span>
+                              <button onClick={() => updateExtraLot(mIdx, lot.id, 'qty', Math.min(maxQty, lot.qty + 1))} disabled={lot.qty >= maxQty}>+</button>
+                            </div>
+                            <div style={{fontSize:10,color:'#854F0B',marginTop:2}}>สูงสุด {maxQty} {r.drug.unit}</div>
+                          </div>
+                          
+                          <div className="g2">
+                            <div>
+                              <div className="lbl" style={{color:'#3C3489'}}>เดือน EXP</div>
+                              <select className="inp" value={lot.expM} onChange={e => updateExtraLot(mIdx, lot.id, 'expM', e.target.value)}>
+                                <option value="">-- Month --</option>
+                                {months.map((m,i)=><option key={m} value={m}>{m} ({thM[i]})</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <div className="lbl" style={{color:'#3C3489'}}>EXP Year</div>
+                              <select className="inp" value={lot.expY} onChange={e => updateExtraLot(mIdx, lot.id, 'expY', e.target.value)}>
+                                <option value="">-- Year --</option>
+                                {years.map(y=><option key={y} value={y}>{y}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                          
+                          {lot.expM && lot.expY && (
+                            <div style={{fontSize:11,color:'#0F6E56',marginTop:4}}>→ จะบันทึก {lot.qty} {r.drug.unit}, EXP {lot.expM}/{lot.expY}</div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    
+                    <button onClick={() => addExtraLot(mIdx)} className="btn sm full" style={{marginBottom:12,borderColor:'#FFB74D',color:'#E65100'}} disabled={r.extraLots.reduce((s, l) => s + l.qty, 0) >= (r.counted - r.systemTotal)}>
+                      + เพิ่ม lot (ถ้า EXP ต่าง)
+                    </button>
+                    
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#FFF3E0',borderRadius:6,border:'1px solid #FFB74D'}}>
+                      <div style={{fontSize:12}}>รวมยาเกิน: <b style={{color:r.extraLots.reduce((s,l)=>s+l.qty,0)===(r.counted-r.systemTotal)?'#0F6E56':'#A32D2D'}}>{r.extraLots.reduce((s,l)=>s+l.qty,0)}</b> / {r.counted-r.systemTotal} {r.drug.unit}</div>
+                      <div style={{fontSize:11,color:r.extraLots.reduce((s,l)=>s+l.qty,0)===(r.counted-r.systemTotal)?'#0F6E56':'#A32D2D'}}>{r.extraLots.reduce((s,l)=>s+l.qty,0)===(r.counted-r.systemTotal)?'✓ ครบแล้ว':'ยังไม่ครบ'}</div>
                     </div>
-                    {r.expM&&r.expY&&<div style={{fontSize:11,color:'#0F6E56',marginTop:4}}>→ จะบันทึก EXP {r.expM}/{r.expY} (วันสุดท้ายของเดือน)</div>}
+
                   </>
                 )}
               </div>
@@ -4990,8 +5061,8 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
     checks.forEach(c => {
       const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
       if (ts < start) return
-      const dateKey = ts.toISOString().slice(0,10)
       const shiftKey = c.shift?.includes('Day') ? 'Day' : 'Night'
+      const dateKey = shiftDateKey(ts, c.shift)
       done.add(`${dateKey}_${shiftKey}`)
     })
     // นับวันที่ควรเช็ค (Day + Night ต่อวัน)
@@ -5105,7 +5176,7 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
     // ── Section 1: Summary ──
     const totalUses    = filtered.length
     const returned     = filtered.filter(w => w.returned).length
-    const pending      = filtered.filter(w => !w.returned).length
+    const pending      = filtered.filter(w => !w.returned && w.usage_type !== 'Missing_Unknown').length
     const drugUsage    = {}
     filtered.forEach(w => { drugUsage[w.drugName] = (drugUsage[w.drugName]||0) + w.qty })
     const topDrugs = Object.entries(drugUsage).sort((a,b)=>b[1]-a[1]).slice(0,5)
@@ -5389,11 +5460,11 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
       const dateKey = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`
       const daySess  = checks.filter(c => {
         const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
-        return ts.toISOString().slice(0,10) === dateKey && (c.shift||'').includes('Day')
+        return shiftDateKey(ts, c.shift) === dateKey && (c.shift||'').includes('Day')
       })
       const nightSess = checks.filter(c => {
         const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
-        return ts.toISOString().slice(0,10) === dateKey && !(c.shift||'').includes('Day')
+        return shiftDateKey(ts, c.shift) === dateKey && !(c.shift||'').includes('Day')
       })
       const thDate = new Date(dateKey).toLocaleDateString('th-TH', { day:'2-digit', month:'2-digit' })
       const dow = new Date(dateKey).toLocaleDateString('th-TH', { weekday:'short' })
