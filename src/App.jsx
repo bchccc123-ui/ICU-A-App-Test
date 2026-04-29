@@ -3445,7 +3445,7 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
         ls.forEach(l => { if(rem<=0){lotCuts[l.docId]=0;return}; const cut=Math.min(l.qty,rem); lotCuts[l.docId]=cut; rem-=cut })
         discList.push({ type:'cut', drug:d, counted:cnt, systemTotal:sys, lots:ls, lotCuts, expM:'', expY:'', missingType:'', missingBed:'' })
       } else if (cnt > sys) {
-        discList.push({ type:'add', drug:d, counted:cnt, systemTotal:sys, lots:ls, lotCuts:{}, expM:'', expY:'' })
+        discList.push({ type:'add', drug:d, counted:cnt, systemTotal:sys, lots:ls, lotCuts:{}, expM:'', expY:'', extraLots:[{ id:1, qty:cnt-sys, expM:'', expY:'' }] })
       }
     })
     if (discList.length === 0) {
