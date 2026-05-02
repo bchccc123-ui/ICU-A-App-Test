@@ -454,7 +454,7 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                       <span>Slot {item.groupName || 'M-04'}</span>
                     </div>
                     <div style={{ fontSize:11, color:'rgba(255,255,255,0.85)' }}>
-                      Single stock - วางตรงนี้แล้วนำของเดิมออก FEFO
+                      Single stock - วางลงตำแหน่งเดิม (ของเดิมหยิบออกไปแล้ว)
                     </div>
                   </div>
                 ) : (
@@ -479,8 +479,8 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                             </>
                           ) : item.pa.direction === 'fb' ? (
                             <>
-                              <span>← หน้า (หยิบก่อน)</span>
-                              <span>หลัง →</span>
+                              <span>← หลัง</span>
+                              <span>หน้า (หยิบก่อน) →</span>
                             </>
                           ) : (
                             <>
@@ -533,8 +533,8 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                               )
                             }
                             
-                            // Reverse สำหรับ RTL (ขวา EXP ก่อน)
-                            if (item.pa.direction === 'rtl') {
+                            // Reverse สำหรับ RTL และ FB
+                            if (item.pa.direction === 'rtl' || item.pa.direction === 'fb') {
                               return timelineItems.reverse()
                             }
                             
@@ -699,7 +699,7 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
 
   // สำหรับ RTL แสดงจากขวาไปซ้าย → reverse
   const displayLots = dir === 'rtl' ? [...allSorted].reverse() : allSorted
-  // fb: หน้าอยู่ล่าง หลังอยู่บน
+  // FB: หน้าอยู่ขวา หลังอยู่ซ้าย → reverse (เหมือน RTL)
   const fbLots = [...allSorted].reverse()
 
   const pillStyle = { background:'rgba(255,255,255,0.18)', borderRadius:20, padding:'3px 10px', fontSize:11, color:'#fff' }
@@ -1925,15 +1925,23 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         // ใช้ getDrugDir() เหมือน calculateFEFOWithReturns
         const dir = getDrugDir(drugId)
         
-        // ✓ FIX: Format existingLots ให้มี 'exp' field สำหรับ PutawayOverlay
-        const formattedExistingLots = existingLots.map(l => ({
-          exp: fmtMY(l.expiry),
-          expiry: l.expiry
-        }))
+        // ✨ NEW: แตก lots เป็น individual vials
+        const sortedLots = [...existingLots].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+        const existingVials = []
+        let vialCounter = 1
+        for (const lot of sortedLots) {
+          for (let i = 0; i < lot.qty; i++) {
+            existingVials.push({
+              exp: fmtMY(lot.expiry),
+              expiry: lot.expiry,
+              vialNum: vialCounter++,
+              lotExpiry: lot.expiry
+            })
+          }
+        }
         
-        // คำนวณ position โดยใช้ Par (จำนวนชิ้นที่ควรมี)
-        // แทนการนับ lots
-        const sorted = [...formattedExistingLots, { expiry, isNew: true }]
+        // คำนวณ position โดยใช้ vials
+        const sorted = [...existingVials, { expiry, isNew: true }]
           .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
         
         const newIndex = sorted.findIndex(l => l.isNew)
@@ -1942,8 +1950,8 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         return {
           direction: dir,
           position,
-          existingLots: formattedExistingLots,  // ✓ ส่ง formatted version
-          par: drug.par  // ← เพิ่ม par เพื่อให้ overlay ใช้
+          existingLots: existingVials,  // ส่ง vials แทน lots
+          par: drug.par
         }
       }
 
