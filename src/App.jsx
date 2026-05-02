@@ -5530,13 +5530,19 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
     a.click(); URL.revokeObjectURL(url)
   }
 
+  // กรอง checks ตามเดือนที่เลือก (สำหรับ KPI)
+  const kpiChecks = kpiMonth === 'all' ? checks : checks.filter(c => {
+    const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
+    return ts.toISOString().slice(0,7) === kpiMonth
+  })
+
   /* ── Compliance calculation ── */
-  const calcCompliance = (days) => {
+  const calcCompliance = (days, filteredChecks = checks) => {
     const now   = new Date()
     const start = new Date(now); start.setDate(start.getDate() - days + 1); start.setHours(0,0,0,0)
     // สร้าง map: "YYYY-MM-DD_Day"|"YYYY-MM-DD_Night" → true
     const done = new Set()
-    checks.forEach(c => {
+    filteredChecks.forEach(c => {
       const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
       if (ts < start) return
       const shiftKey = c.shift?.includes('Day') ? 'Day' : 'Night'
@@ -5563,8 +5569,8 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
     return { daily, expected, actual, rate, days: daily.length }
   }
 
-  const comp = calcCompliance(reportDays)
-  const checksWithDur = checks.filter(c => c.durationMin != null)
+  const comp = calcCompliance(reportDays, kpiChecks)
+  const checksWithDur = kpiChecks.filter(c => c.durationMin != null)
   const avgDur = checksWithDur.length
     ? Math.round(checksWithDur.reduce((s,c)=>s+(c.durationMin||0),0)/checksWithDur.length*10)/10 : null
 
@@ -5573,12 +5579,6 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
   const missedExchange     = removals.filter(r => r.missedExchange).length          // expired โดยไม่ได้แลก
   const returnedInTime     = removals.filter(r => r.reason==='returned_to_pharmacy' && r.daysBeforeExp > 0).length
   const missedExchangeRate = totalRemoved > 0 ? Math.round(missedExchange/totalRemoved*1000)/10 : null
-
-  // กรอง checks ตามเดือนที่เลือก (สำหรับ KPI)
-  const kpiChecks = kpiMonth === 'all' ? checks : checks.filter(c => {
-    const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
-    return ts.toISOString().slice(0,7) === kpiMonth
-  })
 
   // Stock Deficiency Rate (avg จาก kpiChecks)
   const checksWithDef = kpiChecks.filter(c => c.deficiencyRate != null)
@@ -5594,6 +5594,12 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
   const avgUntracedRate = checksWithUnt.length
     ? Math.round(checksWithUnt.reduce((s,c)=>s+(c.untracedRate||0),0)/checksWithUnt.length*10)/10 : null
   const totalUntracedUnits = checksWithUnt.reduce((s,c) => s + (c.totalDiscrepancyUnits||0), 0)
+
+  // Filter withdrawals ตาม kpiMonth
+  const kpiWithdrawals = kpiMonth === 'all' ? withdrawals : withdrawals.filter(w => {
+    const ts = w.ts?.toDate ? w.ts.toDate() : new Date(w.ts)
+    return ts.toISOString().slice(0, 7) === kpiMonth
+  })
 
   // unique months จาก checks (สำหรับ dropdown)
   const availableMonths = [...new Set(checks.map(c => {
@@ -6337,7 +6343,7 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
           <div className="sc-l" style={{ color:'#3B6D11' }}>รายการยา</div>
         </div>
         <div className="sc" style={{ background:'#E6F1FB', borderColor:'#B5D4F4' }}>
-          <div className="sc-n" style={{ color:'#185FA5' }}>{withdrawals.length}</div>
+          <div className="sc-n" style={{ color:'#185FA5' }}>{kpiWithdrawals.length}</div>
           <div className="sc-l" style={{ color:'#185FA5' }}>บันทึกใช้ยา</div>
         </div>
         <div className="sc" style={{ background:'#FAEEDA', borderColor:'#FAC775' }}>
@@ -6345,7 +6351,7 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
           <div className="sc-l" style={{ color:'#854F0B' }}>ใกล้หมดอายุ</div>
         </div>
         <div className="sc" style={{ background:'#EEEDFE', borderColor:'#CECBF6' }}>
-          <div className="sc-n" style={{ color:'#3C3489' }}>{checks.length}</div>
+          <div className="sc-n" style={{ color:'#3C3489' }}>{kpiChecks.length}</div>
           <div className="sc-l" style={{ color:'#3C3489' }}>ครั้งเช็คสต็อก</div>
         </div>
       </div>
