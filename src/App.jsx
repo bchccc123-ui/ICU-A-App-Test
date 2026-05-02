@@ -1062,6 +1062,7 @@ export default function App() {
     { id: 'expiry',    icon: '📅', label: 'Expiry' },
     { id: 'pending',   icon: '⏱', label: 'Pending' },
     { id: 'history',   icon: '📋', label: 'History' },
+    { id: 'additions', icon: '📥', label: 'ประวัติเติมสต็อก' },
     { id: 'export',    icon: '📤', label: 'Export' },
     { id: 'setting',   icon: '⚙️', label: 'Setting' },
   ]
@@ -1155,6 +1156,7 @@ export default function App() {
               lotsOf={lotsOf} calcPutaway={calcPutaway} fmtDT={fmtDT} fmtMY={fmtMY}
               daysLeft={daysLeft} db={db} setPutaway={setPutaway}
               nurses={nurses} drugs={drugsWithStock()}
+              stockAdditions={stockAdditions}
             />
           )}
           {curTab === 'export' && (
@@ -5196,10 +5198,17 @@ function Expiry({ lots, drugs, daysLeft, fmtMY, db, removals, nurses, drugsWithS
 }
 
 /* ═══ HISTORY ═══ */
-function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY, daysLeft, db, setPutaway, nurses, drugs }) {
+function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY, daysLeft, db, setPutaway, nurses, drugs, stockAdditions }) {
   const [tab, setTab] = useState('w')
   const [retStates, setRetStates] = useState({})
-  const [historyMonth, setHistoryMonth] = useState('all')
+  const [historyMonth, setHistoryMonth] = useState(() => {
+    const n = new Date()
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}`
+  })
+  
+  // Filter states สำหรับ Stock Additions tab
+  const [filterDrug, setFilterDrug] = useState('all')
+  const [filterSource, setFilterSource] = useState('all')
 
   const openRet = docId => setRetStates(s => ({ ...s, [docId]: { open: true, expM: '', expY: '', preview: null } }))
   const closeRet = docId => setRetStates(s => ({ ...s, [docId]: undefined }))
@@ -5244,6 +5253,43 @@ function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY,
     return ts.toISOString().slice(0,7) === historyMonth
   })
 
+  // Filter stock additions by month
+  let filteredAdditions = historyMonth === 'all' ? (stockAdditions || []) : (stockAdditions || []).filter(sa => {
+    const ts = sa.ts?.toDate ? sa.ts.toDate() : new Date(sa.ts)
+    return ts.toISOString().slice(0,7) === historyMonth
+  })
+
+  // Filter by drug
+  if (filterDrug !== 'all') {
+    filteredAdditions = filteredAdditions.filter(sa => sa.drugId == filterDrug)
+  }
+
+  // Filter by source
+  if (filterSource !== 'all') {
+    filteredAdditions = filteredAdditions.filter(sa => sa.source === filterSource)
+  }
+
+  // Source mapping
+  const sourceMap = {
+    'restock': { label: 'เติมจากห้องยา', icon: '📦', color: '#4CAF50' },
+    'return': { label: 'Return (Stock Use)', icon: '✓', color: '#2196F3' },
+    'replace': { label: 'Replace (Emergency/Missing)', icon: '🔄', color: '#FF9800' },
+    'stock-count-add': { label: 'Stock Count (เพิ่ม)', icon: '➕', color: '#9C27B0' }
+  }
+
+  // Summary by source
+  const sourceSummary = {}
+  filteredAdditions.forEach(sa => {
+    if (!sourceSummary[sa.source]) {
+      sourceSummary[sa.source] = { count: 0, totalUnits: 0 }
+    }
+    sourceSummary[sa.source].count++
+    sourceSummary[sa.source].totalUnits += sa.qty
+  })
+
+  // Get unique drugs from stock additions
+  const uniqueDrugs = [...new Set((stockAdditions || []).map(sa => sa.drugId))]
+
   return (
     <>
       {/* Month Filter Dropdown */}
@@ -5263,9 +5309,10 @@ function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY,
         </select>
       </div>
 
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <button className={`btn full${tab === 'w' ? ' primary' : ''}`} onClick={() => setTab('w')}>เบิกยา ({filteredWithdrawals.length})</button>
         <button className={`btn full${tab === 'c' ? ' primary' : ''}`} onClick={() => setTab('c')}>เช็คสต็อก ({filteredChecks.length})</button>
+        <button className={`btn full${tab === 'a' ? ' primary' : ''}`} onClick={() => setTab('a')}>📥 เติมสต็อก ({filteredAdditions.length})</button>
       </div>
       <div className="card" style={{ padding: '0 14px' }}>
         {tab === 'w' ? (
@@ -5320,7 +5367,7 @@ function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY,
               </div>
             )
           }) : <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: '#8BA898' }}>ยังไม่มีบันทึก</div>
-        ) : (
+        ) : tab === 'c' ? (
           filteredChecks.length ? filteredChecks.map(c => (
             <div key={c.docId} className="wrow">
               <div style={{ flex: 1 }}>
@@ -5333,6 +5380,87 @@ function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY,
               <span className="b bg">✓ เช็คแล้ว</span>
             </div>
           )) : <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: '#8BA898' }}>ยังไม่มีบันทึก</div>
+        ) : (
+          /* Stock Additions Tab */
+          <>
+            {/* Filters */}
+            <div style={{ padding: '12px 0 8px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <select value={filterDrug} onChange={e => setFilterDrug(e.target.value)}
+                style={{ flex: 1, minWidth: 120, padding: '6px 8px', borderRadius: 6, border: '0.5px solid #D8EAE0', fontSize: 11 }}>
+                <option value="all">ทุกยา</option>
+                {uniqueDrugs.map(drugId => {
+                  const drug = drugs.find(d => d.id == drugId)
+                  const count = filteredAdditions.filter(sa => sa.drugId == drugId).length
+                  return drug ? <option key={drugId} value={drugId}>{drug.name} ({count})</option> : null
+                })}
+              </select>
+              
+              <select value={filterSource} onChange={e => setFilterSource(e.target.value)}
+                style={{ flex: 1, minWidth: 120, padding: '6px 8px', borderRadius: 6, border: '0.5px solid #D8EAE0', fontSize: 11 }}>
+                <option value="all">ทุกประเภท</option>
+                {Object.keys(sourceMap).map(source => {
+                  const count = filteredAdditions.filter(sa => sa.source === source).length
+                  return count > 0 ? <option key={source} value={source}>{sourceMap[source].label} ({count})</option> : null
+                })}
+              </select>
+            </div>
+
+            {/* Summary by source */}
+            {Object.keys(sourceSummary).length > 0 && (
+              <div style={{ padding: '8px 0 12px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {Object.keys(sourceMap).map(source => {
+                  const summary = sourceSummary[source]
+                  if (!summary) return null
+                  const info = sourceMap[source]
+                  return (
+                    <div key={source} style={{ 
+                      flex: '1 1 auto', 
+                      minWidth: 100,
+                      padding: '6px 10px', 
+                      background: `${info.color}15`, 
+                      border: `0.5px solid ${info.color}60`,
+                      borderRadius: 8,
+                      fontSize: 10
+                    }}>
+                      <div style={{ fontWeight: 600, color: info.color }}>{info.icon} {summary.count}ครั้ง</div>
+                      <div style={{ color: '#5F7A6A', marginTop: 2 }}>{summary.totalUnits} หน่วย</div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* List of stock additions */}
+            {filteredAdditions.length > 0 ? filteredAdditions.map(sa => {
+              const drug = drugs.find(d => d.id == sa.drugId)
+              const info = sourceMap[sa.source] || { label: sa.source, icon: '?', color: '#757575' }
+              return (
+                <div key={sa.docId} className="wrow">
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 12, fontWeight: 500 }}>{sa.drugName || drug?.name}</span>
+                      <span className="b bb">×{sa.qty}</span>
+                      <span className="b" style={{
+                        background: `${info.color}15`,
+                        color: info.color,
+                        border: `0.5px solid ${info.color}60`,
+                        fontSize: 10,
+                        padding: '2px 7px'
+                      }}>
+                        {info.icon} {info.label}
+                      </span>
+                      {sa.loaned && <span className="b" style={{background:'#FFF9C4',color:'#F57F17',border:'0.5px solid #FFF59D',fontSize:10,padding:'2px 7px'}}>🏥 ฝากใช้</span>}
+                    </div>
+                    <div style={{ fontSize: 10, color: '#8BA898' }}>
+                      {sa.nurse} · EXP {fmtMY(sa.expiry)}
+                      {sa.note && ` · ${sa.note}`}
+                    </div>
+                    <div style={{ fontSize: 10, color: '#8BA898', fontFamily: 'monospace' }}>{sa.ts && fmtDT(sa.ts)}</div>
+                  </div>
+                </div>
+              )
+            }) : <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: '#8BA898' }}>ไม่พบข้อมูล</div>}
+          </>
         )}
       </div>
     </>
@@ -5343,7 +5471,7 @@ function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY,
 function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, calcPutaway, lotsOf, removals, expirySnapshots, stockAdditions, drugs }) {
   const dl = drugsWithStock()
   const [reportDays, setReportDays] = useState(30)
-  const [kpiMonth, setKpiMonth] = useState('all')
+  const [kpiMonth, setKpiMonth] = useState(() => { const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}` })
   const [logMonth, setLogMonth] = useState(() => { const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}` })
   const [withdrawalMonth, setWithdrawalMonth] = useState(() => { const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}` })
   const [reportMonth, setReportMonth] = useState(() => { const n=new Date(); n.setMonth(n.getMonth()-1); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}` })
