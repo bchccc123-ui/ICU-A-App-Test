@@ -3008,10 +3008,6 @@ function QuickUseModal({ open, onClose, drugsWithStock, lots, nurses, db, initDr
 
 function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, calcPutaway, nurses, setCurTab, setPutaway, db, fmtMY, daysLeft, setQModal, setSmartTimestampModal, pendingSyncs, withdrawals, checks }) {
   const [retStates, setRetStates] = useState({})
-  const [dashboardMonth, setDashboardMonth] = useState(() => {
-    const n = new Date()
-    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}`
-  })
   
   const scrollTo = (id) => {
     const el = document.getElementById(id)
@@ -3019,27 +3015,6 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
   }
   const dl = drugsWithStock()
   
-  // Filter data by selected month
-  const filteredWithdrawals = dashboardMonth === 'all' ? (withdrawals || []) : (withdrawals || []).filter(w => {
-    const ts = w.ts?.toDate ? w.ts.toDate() : new Date(w.ts)
-    return ts.toISOString().slice(0, 7) === dashboardMonth
-  })
-  
-  const filteredChecks = dashboardMonth === 'all' ? (checks || []) : (checks || []).filter(c => {
-    const ts = c.ts?.toDate ? c.ts.toDate() : new Date(c.ts)
-    return ts.toISOString().slice(0, 7) === dashboardMonth
-  })
-  
-  const filteredUnret = dashboardMonth === 'all' ? (unret || []) : (unret || []).filter(w => {
-    const ts = w.ts?.toDate ? w.ts.toDate() : new Date(w.ts)
-    return ts.toISOString().slice(0, 7) === dashboardMonth
-  })
-  
-  // Generate available months from withdrawals
-  const availableMonths = [...new Set((withdrawals || []).map(w => {
-    const ts = w.ts?.toDate ? w.ts.toDate() : new Date(w.ts)
-    return ts.toISOString().slice(0, 7)
-  }))].sort().reverse()
   const openRet = docId => {
     const w = unret.find(x => x.docId === docId)
     // qty เริ่มต้น = ที่ยังเหลือ (qty - returned_qty)
@@ -3168,23 +3143,6 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
 
   return (
     <>
-      {/* Month Filter Dropdown */}
-      <div style={{ marginBottom: 12 }}>
-        <select value={dashboardMonth} onChange={e => setDashboardMonth(e.target.value)}
-          style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '0.5px solid #D8EAE0', background: '#fff', fontSize: 13, color: '#1A2E25', fontWeight: 500 }}>
-          <option value="all">📅 ทุกเดือน ({(withdrawals || []).length} รายการ)</option>
-          {availableMonths.map(month => {
-            const count = (withdrawals || []).filter(w => {
-              const ts = w.ts?.toDate ? w.ts.toDate() : new Date(w.ts)
-              return ts.toISOString().slice(0, 7) === month
-            }).length
-            const [y, m] = month.split('-')
-            const label = new Date(y, m - 1).toLocaleDateString('th-TH', { month: 'long', year: 'numeric' })
-            return <option key={month} value={month}>{label} ({count} รายการ)</option>
-          })}
-        </select>
-      </div>
-
       {/* Quick Use Bar */}
       {/* ─── Action Buttons Row ─── */}
       <div style={{ display:'flex', gap:8 }}>
@@ -3253,7 +3211,7 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
           <div className="sc-l" style={{ color: '#7F8C8D' }}>Expiry Alert</div>
         </div>
         <div className="sc sc-ripple" style={{ background: '#FFFFFF', borderColor: '#A8D4F0', border:'0.5px solid #A8D4F0', cursor:'pointer' }} onClick={()=>document.getElementById('sect-ret')?.scrollIntoView({behavior:'smooth',block:'nearest'})}>
-          <div className="sc-n" style={{ color: '#2980B9' }}>{filteredUnret.length}</div>
+          <div className="sc-n" style={{ color: '#2980B9' }}>{unret.length}</div>
           <div className="sc-l" style={{ color: '#7F8C8D' }}>Pending Returns</div>
         </div>
       </div>
@@ -3304,27 +3262,27 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
 
       {/* Pending Returns */}
       <div id='sect-ret'/>
-      {filteredUnret.length > 0 && (
+      {unret.length > 0 && (
         <div style={{ background:'#E3F2FD', border:'1.5px solid #42A5F5', borderRadius:14, padding:'12px 14px', position:'relative', cursor:'pointer', transition:'all 0.2s ease' }}
           onMouseEnter={(e) => e.currentTarget.style.boxShadow = '0 4px 14px rgba(66,165,245,0.25)'}
           onMouseLeave={(e) => e.currentTarget.style.boxShadow = 'none'}>
           {/* Badge */}
           <div className="blink-badge" style={{ position:'absolute', top:-6, left:12, background:'#F44336', color:'#fff', borderRadius:20, minWidth:20, height:20, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:600, padding:'0 5px', border:'2px solid #fff' }}>
-            {filteredUnret.length}
+            {unret.length}
           </div>
           {/* Overall progress for partial returns */}
           {(() => {
-            const _totReq = filteredUnret.reduce((s,w) => s + (w.qty||0), 0)
-            const _totRet = filteredUnret.reduce((s,w) => s + (w.returned_qty||0), 0)
+            const _totReq = unret.reduce((s,w) => s + (w.qty||0), 0)
+            const _totRet = unret.reduce((s,w) => s + (w.returned_qty||0), 0)
             const _pct = _totReq > 0 ? Math.min(100, Math.round(_totRet/_totReq*100)) : 0
-            const _partial = filteredUnret.filter(w => (w.returned_qty||0) > 0).length
+            const _partial = unret.filter(w => (w.returned_qty||0) > 0).length
             return (
               <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:10 }}>
                 <div className="alert-icon-pulse-blue" style={{ width:44, height:44, borderRadius:'50%', background:'#fff', border:'2px solid #42A5F5', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                   <span className="bounce-icon" style={{ fontSize:22 }}>📥</span>
                 </div>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:13, fontWeight:600, color:'#0D47A1', wordBreak:'break-word', overflowWrap:'break-word' }}>Pending Returns ({filteredUnret.length})</div>
+                  <div style={{ fontSize:13, fontWeight:600, color:'#0D47A1', wordBreak:'break-word', overflowWrap:'break-word' }}>Pending Returns ({unret.length})</div>
                   <div style={{ fontSize:10, color:'#1565C0', marginTop:1 }}>
                     ใส่ EXP เพื่อดูตำแหน่งวาง
                     {_partial > 0 && <span style={{ marginLeft:6, color:'#E65100', fontWeight:500 }}>· กำลังคืน {_partial} รายการ</span>}
@@ -3344,7 +3302,7 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
               </div>
             )
           })()}
-          {filteredUnret.map(w => {
+          {unret.map(w => {
             const rs = retStates[w.docId]
             const exLots = lots.filter(l => l.drugId == w.drugId && l.qty > 0).sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
             return (
