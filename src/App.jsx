@@ -390,28 +390,36 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
             let positionLabel = ''
             if (!isSingle && item.pa) {
               const dir = item.pa.direction || 'ltr'
-              const existingL = item.pa.existingLots || []
-              const retQty = item.returnLots?.reduce((s,l)=>s+(l.qty||1),0) || item.qty || 1
-              // คำนวณ amp start ของ return lot นี้ (EXP น้อยกว่า existing)
-              const retExpiry = item.returnLots?.[0]?.expiry || item.expiry
-              const allL = [
-                ...existingL.map(l=>({ expiry:l.expiry, qty:l.qty||1, isNew:false })),
-                { expiry:retExpiry, qty:retQty, isNew:true }
-              ].sort((a,b)=>new Date(a.expiry)-new Date(b.expiry))
-              const totalQtyAll = allL.reduce((s,l)=>s+l.qty,0)
-              let ampStart = 1
-              for (const l of allL) { if (l.isNew) break; ampStart += l.qty }
-              const ampEnd = ampStart + retQty - 1
-              const ampRange = ampStart===ampEnd ? `แอมป์ที่ ${ampStart}` : `แอมป์ที่ ${ampStart}–${ampEnd}`
+              const pos = item.pa.position || 1
+              const par = item.pa.par || (item.pa.existingLots?.length || 0) + 1
+              
               if (dir === 'rtl') {
-                const ampFromRight_start = totalQtyAll - ampEnd + 1
-                const ampFromRight_end   = totalQtyAll - ampStart + 1
-                const ampRangeR = ampFromRight_start===ampFromRight_end ? `แอมป์ที่ ${ampFromRight_start} จากขวา` : `แอมป์ที่ ${ampFromRight_start}–${ampFromRight_end} จากขวา`
-                positionLabel = ampFromRight_end === 1 ? `วางขวาสุด (${ampRangeR}/${totalQtyAll})` : ampStart===1 ? `วางซ้ายสุด (${ampRangeR}/${totalQtyAll})` : `วาง ${ampRangeR} จาก ${totalQtyAll}`
+                // RTL: ขวา = EXP ก่อน
+                if (pos === 1) {
+                  positionLabel = 'วางช่อง 1 (ขวาสุด)'
+                } else if (pos === par) {
+                  positionLabel = `วางช่อง ${pos} (ซ้ายสุด)`
+                } else {
+                  positionLabel = `วางช่องที่ ${pos} จากขวา`
+                }
               } else if (dir === 'fb') {
-                positionLabel = ampStart===1 ? `วางหน้าสุด (${ampRange}/${totalQtyAll})` : ampEnd===totalQtyAll ? `วางหลังสุด (${ampRange}/${totalQtyAll})` : `วาง ${ampRange} จาก ${totalQtyAll}`
+                // FB: หน้า = EXP ก่อน
+                if (pos === 1) {
+                  positionLabel = 'วางช่อง 1 (หน้าสุด)'
+                } else if (pos === par) {
+                  positionLabel = `วางช่อง ${pos} (หลังสุด)`
+                } else {
+                  positionLabel = `วางช่องที่ ${pos} จากด้านหน้า`
+                }
               } else {
-                positionLabel = ampStart===1 ? `วางซ้ายสุด (${ampRange}/${totalQtyAll})` : ampEnd===totalQtyAll ? `วางขวาสุด (${ampRange}/${totalQtyAll})` : `วาง ${ampRange} จาก ${totalQtyAll}`
+                // LTR: ซ้าย = EXP ก่อน
+                if (pos === 1) {
+                  positionLabel = 'วางช่อง 1 (ซ้ายสุด)'
+                } else if (pos === par) {
+                  positionLabel = `วางช่อง ${pos} (ขวาสุด)`
+                } else {
+                  positionLabel = `วางช่องที่ ${pos} จากซ้าย`
+                }
               }
             }
             
@@ -481,24 +489,56 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                             </>
                           )}
                         </div>
-                        <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
-                          {/* Build timeline — expanded per amp qty */}
+                        <div style={{ display:'flex', gap:4, flexWrap:'wrap', overflowX:'auto', maxWidth:'100%' }}>
+                          {/* Build timeline array แสดง individual vials */}
                           {(() => {
-                            const dir2 = item.pa.direction || 'ltr'
-                            const retQty2 = item.returnLots?.reduce((s,l)=>s+(l.qty||1),0) || item.qty || 1
-                            const retExp2 = item.returnLots?.[0]?.expiry || item.expiry
-                            const allL2 = [
-                              ...(item.pa.existingLots||[]).map(l=>({ expiry:l.expiry, qty:l.qty||1, isNew:false })),
-                              { expiry:retExp2, qty:retQty2, isNew:true }
-                            ].sort((a,b)=>new Date(a.expiry)-new Date(b.expiry))
-                            const slots2 = []
-                            let ampN = 1
-                            for (const l of allL2) { for (let i=0;i<l.qty;i++) slots2.push({...l, ampNum: ampN++}) }
-                            const rendered = dir2 === 'rtl' ? [...slots2].reverse() : slots2
-                            return rendered.map((s,si) => s.isNew
-                              ? <div key={si} style={{ fontSize:9, padding:'4px 6px', borderRadius:6, background:'rgba(93,219,167,0.3)', border:'1px solid rgba(93,219,167,0.5)', color:'#5DDBA7', fontWeight:700 }}>📍#{s.ampNum}</div>
-                              : <div key={si} style={{ fontSize:9, padding:'4px 6px', borderRadius:6, background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', color:'rgba(255,255,255,0.6)' }}>#{s.ampNum} {fmtMY(s.expiry)}</div>
-                            )
+                            const timelineItems = []
+                            const existingVials = item.pa.existingLots || []
+                            const numReturning = item.qty || item.returnLots?.reduce((s,l)=>s+l.qty,0) || 1
+                            
+                            // เพิ่ม existing vials
+                            existingVials.forEach((vial, idx) => {
+                              timelineItems.push(
+                                <div key={`vial-${idx}`} style={{ 
+                                  fontSize:9, 
+                                  padding:'4px 6px', 
+                                  borderRadius:6, 
+                                  background:'rgba(255,255,255,0.08)', 
+                                  border:'1px solid rgba(255,255,255,0.15)', 
+                                  color:'rgba(255,255,255,0.6)',
+                                  whiteSpace:'nowrap'
+                                }}>
+                                  {fmtMY(vial.expiry)}
+                                  <div style={{fontSize:7, opacity:0.5}}>#{vial.vialNum}</div>
+                                </div>
+                              )
+                            })
+                            
+                            // เพิ่ม new vials (วางตรงนี้)
+                            for (let i = 0; i < numReturning; i++) {
+                              timelineItems.push(
+                                <div key={`new-${i}`} style={{ 
+                                  fontSize:9, 
+                                  padding:'4px 6px', 
+                                  borderRadius:6, 
+                                  background:'rgba(93,219,167,0.3)', 
+                                  border:'1px solid rgba(93,219,167,0.5)', 
+                                  color:'#5DDBA7', 
+                                  fontWeight:700,
+                                  whiteSpace:'nowrap'
+                                }}>
+                                  📍 วาง
+                                  <div style={{fontSize:7}}>#{existingVials.length + i + 1}</div>
+                                </div>
+                              )
+                            }
+                            
+                            // Reverse สำหรับ RTL (ขวา EXP ก่อน)
+                            if (item.pa.direction === 'rtl') {
+                              return timelineItems.reverse()
+                            }
+                            
+                            return timelineItems
                           })()}
                         </div>
                       </div>
@@ -560,15 +600,12 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
       </div>
     )
   }
-  if (!pa) return null
   const dir = pa.direction || 'fb'
 
   // รองรับทั้ง single lot (expiry/qty) และ multi lot (returnLots array)
-  // กรอง lot ที่ expiry ไม่ valid ออกก่อน render
-  const retLots = (returnLots
-    ? [...returnLots].filter(l => l.expiry && !isNaN(new Date(l.expiry))).sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
-    : (expiry && !isNaN(new Date(expiry)) ? [{ expiry, qty: qty || 1 }] : []))
-  if (!retLots.length) return null
+  const retLots = returnLots
+    ? [...returnLots].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+    : [{ expiry, qty: qty || 1 }]
 
   const RETURN_COLORS = [
     { bg:'#0F4A38', border:'#5DDBA7', text:'#fff', label:'#5DDBA7' },
@@ -576,58 +613,63 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
     { bg:'#56360A', border:'#F5C842', text:'#fff', label:'#F5C842' },
   ]
 
-  // รวม existing lots + ทุก return lot แล้ว sort ascending EXP
-  const existingLots = pa.existingLots || []
+  // รวม existing vials + ทุก return vial แล้ว sort ascending EXP
+  const existingVials = pa.existingLots || []
+  
+  // แตก returnLots เป็น individual vials
+  const returnVials = []
+  let returnVialCounter = (existingVials.length || 0) + 1
+  for (const retLot of retLots) {
+    const retQty = retLot.qty || 1
+    for (let i = 0; i < retQty; i++) {
+      returnVials.push({
+        exp: fmtMY(retLot.expiry),
+        expiry: retLot.expiry,
+        vialNum: returnVialCounter++,
+        isReturn: true,
+        retIdx: retLots.indexOf(retLot)
+      })
+    }
+  }
+  
   const allSorted = [
-    ...existingLots.map(l => ({ exp: l.exp, expiry: l.expiry, qty: l.qty || 1, isReturn: false, retIdx: -1 })),
-    ...retLots.map((l, i) => ({ exp: fmtMY(l.expiry), expiry: l.expiry, qty: l.qty || 1, isReturn: true, retIdx: i })),
+    ...existingVials.map(v => ({ 
+      exp: v.exp, 
+      expiry: v.expiry, 
+      vialNum: v.vialNum,
+      isReturn: false, 
+      retIdx: -1 
+    })),
+    ...returnVials
   ].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
 
   const total = allSorted.length
-  const totalRetQty = retLots.reduce((s, l) => s + (l.qty || 1), 0)
-  const totalQty = allSorted.reduce((s, l) => s + (l.qty || 1), 0)
+  const totalRetQty = returnVials.length
 
-  // ── helper: คำนวณ amp start/end ของแต่ละ return lot ──
+  // ── helper: ตำแหน่งของแต่ละ return lot ──
   const getPosInfo = (retIdx) => {
-    const retLot = allSorted.find(l => l.isReturn && l.retIdx === retIdx)
-    if (!retLot) return { posText: '', posDetail: '' }
-    // คำนวณ amp offset โดยนับ qty สะสมจาก lot ที่ EXP น้อยกว่า (ascending)
-    let ampStart = 1
-    for (const l of allSorted) {
-      if (l === retLot) break
-      ampStart += (l.qty || 1)
-    }
-    const ampEnd = ampStart + (retLot.qty || 1) - 1
-    const ampRange = ampStart === ampEnd ? `แอมป์ที่ ${ampStart}` : `แอมป์ที่ ${ampStart}–${ampEnd}`
-    let posText = ''
-    if (totalQty === (retLot.qty || 1)) {
-      posText = 'วางได้เลย (ล็อตแรกในชั้น)'
-    } else if (dir === 'fb') {
-      if (ampStart === 1)          posText = `วางหน้าสุด (${ampRange} จาก ${totalQty})`
-      else if (ampEnd === totalQty) posText = `วางหลังสุด (${ampRange} จาก ${totalQty})`
-      else                          posText = `วางหน้า → ${ampRange} จาก ${totalQty} ${drug.unit}`
-    } else if (dir === 'ltr') {
-      if (ampStart === 1)          posText = `วางซ้ายสุด (${ampRange} จาก ${totalQty})`
-      else if (ampEnd === totalQty) posText = `วางขวาสุด (${ampRange} จาก ${totalQty})`
-      else                          posText = `วางซ้าย → ${ampRange} จาก ${totalQty} ${drug.unit}`
-    } else { // rtl — ขวา = EXP ก่อน (index 0 = ขวาสุด)
-      const ampFromRight_start = totalQty - ampEnd + 1
-      const ampFromRight_end   = totalQty - ampStart + 1
-      const ampRangeR = ampFromRight_start === ampFromRight_end
-        ? `แอมป์ที่ ${ampFromRight_start} จากขวา`
-        : `แอมป์ที่ ${ampFromRight_start}–${ampFromRight_end} จากขวา`
-      if (ampFromRight_end === 1)      posText = `วางขวาสุด (${ampRangeR} จาก ${totalQty})`
-      else if (ampFromRight_start === 1 && ampStart === 1) posText = `วางขวาสุด (${ampRangeR} จาก ${totalQty})`
-      else if (ampEnd === totalQty)    posText = `วางซ้ายสุด (${ampRangeR} จาก ${totalQty})`
-      else                             posText = `วางขวา → ${ampRangeR} จาก ${totalQty} ${drug.unit}`
-    }
-    // posDetail: เพื่อนบ้าน
-    const idx = allSorted.indexOf(retLot)
+    const idx = allSorted.findIndex(l => l.isReturn && l.retIdx === retIdx)
     const prev = allSorted[idx - 1]
     const next = allSorted[idx + 1]
+    let posText = ''
+    if (total === 1) {
+      posText = 'วางได้เลย (lot แรกในชั้น)'
+    } else if (dir === 'fb') {
+      if (idx === 0)          posText = `วางหน้าสุด (อันดับที่ 1/${total})`
+      else if (idx === total-1) posText = `วางหลังสุด (อันดับที่ ${idx+1}/${total})`
+      else                    posText = `วางอันดับที่ ${idx+1} จาก ${total} lot`
+    } else if (dir === 'ltr') {
+      if (idx === 0)          posText = `วางซ้ายสุด (อันดับที่ 1/${total})`
+      else if (idx === total-1) posText = `วางขวาสุด (อันดับที่ ${idx+1}/${total})`
+      else                    posText = `วางอันดับที่ ${idx+1} จาก ${total} lot`
+    } else { // rtl
+      if (idx === 0)          posText = `วางขวาสุด (อันดับที่ 1/${total})`
+      else if (idx === total-1) posText = `วางซ้ายสุด (อันดับที่ ${total}/${total})`
+      else                    posText = `วางอันดับที่ ${total - idx} จาก ${total} lot`
+    }
     let posDetail = ''
     if (dir === 'rtl') {
-      if (prev && next) posDetail = `ระหว่าง ${next.exp} (ขวา) และ ${prev.exp} (ซ้าย)`
+      if (prev && next) posDetail = `ระหว่าง ${next.exp} (ซ้าย) และ ${prev.exp} (ขวา)`
       else if (prev)    posDetail = `ทางซ้ายของ ${prev.exp}`
       else if (next)    posDetail = `ทางขวาของ ${next.exp}`
     } else if (dir === 'fb') {
@@ -655,28 +697,10 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
   const cardBg = 'rgba(255,255,255,0.07)'
   const dimTxt = 'rgba(255,255,255,0.5)'
 
-  // สำหรับ RTL: ขวาอยู่ทางขวา (EXP น้อย = ขวา) → reverse allSorted ให้ index 0 = ซ้าย
+  // สำหรับ RTL แสดงจากขวาไปซ้าย → reverse
   const displayLots = dir === 'rtl' ? [...allSorted].reverse() : allSorted
-  // fb: หน้าอยู่ทางซ้าย (EXP น้อย = หน้า = ซ้าย) → allSorted ปกติ (index 0 = หน้า = แถวบนสุดของ layout แนวตั้ง)
-  const fbLots = [...allSorted]  // หน้า = index 0 อยู่ล่าง (วางก่อน)
-
-  // Expand lots into individual amp slots
-  const expandToSlots = (lotsArr) => {
-    const slots = []
-    let ampNum = 1
-    for (const l of lotsArr) {
-      const q = Math.max(1, parseInt(l.qty) || 1)
-      for (let i = 0; i < q; i++) {
-        slots.push({ ...l, ampNum: ampNum++ })
-      }
-    }
-    return slots
-  }
-  const horizSlots = expandToSlots(displayLots)
-  // fb: top = หลัง (EXP มาก), bottom = หน้า (EXP น้อย)
-  const fbSlotsRaw = expandToSlots([...allSorted].reverse()) // top = หลัง
-  // re-number ampNum จากหน้า (1) → fbSlotsRaw[last] = แอมป์ที่ 1
-  const fbSlots = fbSlotsRaw.map((s, i) => ({ ...s, ampNum: totalQty - i }))
+  // fb: หน้าอยู่ล่าง หลังอยู่บน
+  const fbLots = [...allSorted].reverse()
 
   const pillStyle = { background:'rgba(255,255,255,0.18)', borderRadius:20, padding:'3px 10px', fontSize:11, color:'#fff' }
   const rowStyle  = { display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', fontSize:12, color:'rgba(255,255,255,0.85)', borderBottom:'1px solid rgba(255,255,255,0.08)' }
@@ -704,30 +728,26 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                 ? <><span style={{ color:dimTxt }}>◄ ซ้าย</span><span style={{ color:c.pickClr }}>ขวา (หยิบก่อน) ►</span></>
                 : <><span style={{ color:c.pickClr }}>◄ ซ้าย (หยิบก่อน)</span><span style={{ color:dimTxt }}>ขวา ►</span></>}
             </div>
-            <div style={{ display:'flex', gap:4, overflowX:'auto', paddingBottom:4 }}>
-              {horizSlots.map((s, i) => {
-                const rc = s.isReturn ? RETURN_COLORS[s.retIdx] : null
-                const isFirst = i === 0, isLast = i === horizSlots.length - 1
-                const sideLabel = dir === 'rtl'
-                  ? (isLast ? '◄ขวา' : isFirst ? 'ซ้าย►' : null)
-                  : (isFirst ? '◄ซ้าย' : isLast ? 'ขวา►' : null)
+            <div style={{ display:'flex', gap:5, overflowX:'auto' }}>
+              {displayLots.map((v, i) => {
+                const rc = v.isReturn ? RETURN_COLORS[v.retIdx] : null
                 return (
                   <div key={i} style={{
-                    flexShrink:0, width:44, borderRadius:8, padding:'7px 3px', textAlign:'center',
-                    background: rc ? rc.bg : 'rgba(255,255,255,0.08)',
-                    border: rc ? `2px solid ${rc.border}` : '1px solid rgba(255,255,255,0.12)',
+                    flex:0, minWidth:48, borderRadius:9, padding:'8px 4px', textAlign:'center',
+                    background: rc ? rc.bg : 'rgba(255,255,255,0.1)',
+                    border: rc ? `2px solid ${rc.border}` : '1.5px solid rgba(255,255,255,0.15)',
                     color: rc ? rc.text : 'rgba(255,255,255,0.7)',
-                    position:'relative', marginTop: s.isReturn ? 18 : 0,
-                    boxShadow: rc ? `0 0 8px ${rc.border}44` : 'none',
+                    position:'relative', marginTop: v.isReturn ? 22 : 0,
+                    boxShadow: rc ? `0 0 10px ${rc.border}44` : 'none',
                   }}>
-                    {s.isReturn && (
-                      <div style={{ position:'absolute', top:-16, left:'50%', transform:'translateX(-50%)', fontSize:8, fontWeight:800, color:rc.label, whiteSpace:'nowrap', background:ovBg, padding:'1px 4px', borderRadius:4 }}>
-                        📍 วาง
+                    {v.isReturn && (
+                      <div style={{ position:'absolute', top:-18, left:'50%', transform:'translateX(-50%)', fontSize:9, fontWeight:800, color:rc.label, whiteSpace:'nowrap', background:ovBg, padding:'1px 5px', borderRadius:4 }}>
+                        ▶ วาง
                       </div>
                     )}
-                    <div style={{ fontSize:10, fontWeight:800 }}>{s.exp}</div>
-                    <div style={{ fontSize:8, marginTop:2, opacity:0.7 }}>#{s.ampNum}</div>
-                    {s.isReturn && <div style={{ fontSize:8, marginTop:2, color:rc.label, fontWeight:700 }}>{dir === 'rtl' ? '→' : '←'}</div>}
+                    <div style={{ fontSize:11, fontWeight:800 }}>{v.exp}</div>
+                    <div style={{ fontSize:7, marginTop:1, opacity:0.5 }}>#{v.vialNum}</div>
+                    <div style={{ fontSize:9, marginTop:2, opacity:0.8 }}>{v.isReturn ? 'ใหม่' : 'เดิม'}</div>
                   </div>
                 )
               })}
@@ -735,41 +755,45 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
           </>
         ) : (
           <>
-            {/* FB: หลังอยู่บน หน้าอยู่ล่าง — แสดงจากซ้ายไปขวา แต่ layout แนวตั้ง หน้า = ล่าง */}
-            <div style={{ fontSize:9, color:dimTxt, fontWeight:600, textAlign:'center', marginBottom:6, letterSpacing:1 }}>↑ หลังชั้น</div>
-            <div style={{ display:'flex', flexDirection:'column', gap:4, alignItems:'center' }}>
-              {fbSlots.map((s, i) => {
-                const rc = s.isReturn ? RETURN_COLORS[s.retIdx] : null
-                const isFront = s.ampNum === 1, isBack = s.ampNum === totalQty
-                const posWord = isFront ? 'หน้าสุด' : isBack ? 'หลังสุด' : `#${s.ampNum}`
+            {/* FB: หลังอยู่บน หน้าอยู่ล่าง — each row: [num+label | EXP+type | arrow] */}
+            <div style={{ fontSize:9, color:dimTxt, fontWeight:600, textAlign:'center', marginBottom:8, letterSpacing:1 }}>↑ หลังชั้น</div>
+            {/* กล่องยา compact — จัดกึ่งกลาง ไม่เต็มหน้าจอ */}
+            <div style={{ display:'flex', flexDirection:'column', gap:6, alignItems:'center' }}>
+              {fbLots.map((v, i) => {
+                const rc = v.isReturn ? RETURN_COLORS[v.retIdx] : null
+                const realIdx = allSorted.indexOf(v)
+                const isFront = realIdx === 0, isBack = realIdx === total - 1
+                const posWord = isFront ? 'หน้าสุด' : isBack ? 'หลังสุด' : `ที่ ${realIdx + 1}`
                 return (
                   <div key={i} style={{
-                    display:'flex', alignItems:'center', borderRadius:9, overflow:'hidden',
-                    width:190, minHeight:40,
+                    display:'flex', alignItems:'center', borderRadius:10, overflow:'hidden',
+                    width:200, minHeight:66,
                     background: rc ? rc.bg : 'rgba(255,255,255,0.07)',
-                    border: rc ? `2px solid ${rc.border}` : '1px solid rgba(255,255,255,0.1)',
-                    boxShadow: rc ? `0 0 10px ${rc.border}33` : 'none',
+                    border: rc ? `2px solid ${rc.border}` : '1.5px solid rgba(255,255,255,0.1)',
+                    boxShadow: rc ? `0 0 12px ${rc.border}33` : 'none',
                   }}>
+                    {/* Left badge */}
                     <div style={{
-                      width:42, flexShrink:0, display:'flex', flexDirection:'column',
+                      width:60, flexShrink:0, display:'flex', flexDirection:'column',
                       alignItems:'center', justifyContent:'center', padding:'6px 4px',
                       borderRight:'1px solid rgba(255,255,255,0.08)', alignSelf:'stretch',
                     }}>
-                      <div style={{ fontSize:10, fontWeight:800, color: rc ? rc.label : 'rgba(255,255,255,0.35)' }}>#{s.ampNum}</div>
-                      <div style={{ fontSize:8, fontWeight:700, color: rc ? rc.label : 'rgba(255,255,255,0.25)' }}>{posWord}</div>
+                      <div style={{ fontSize:16, fontWeight:700, lineHeight:1, color: rc ? rc.label : 'rgba(255,255,255,0.4)' }}>#{v.vialNum}</div>
+                      <div style={{ fontSize:8, fontWeight:600, marginTop:2, color: rc ? rc.label : 'rgba(255,255,255,0.3)' }}>{posWord}</div>
                     </div>
-                    <div style={{ flex:1, padding:'0 8px' }}>
-                      <div style={{ fontSize:12, fontWeight:800, color:'#fff' }}>{s.exp}</div>
-                      <div style={{ fontSize:8, marginTop:2, color: rc ? rc.label : 'rgba(255,255,255,0.4)' }}>
-                        {s.isReturn ? '📍 วาง' : 'เดิม'}
+                    {/* Right: EXP + type + arrow */}
+                    <div style={{ flex:1, padding:'0 10px' }}>
+                      <div style={{ fontSize:12, fontWeight:800, color:'#fff' }}>{v.exp}</div>
+                      <div style={{ fontSize:9, marginTop:2, color: rc ? rc.label : 'rgba(255,255,255,0.4)' }}>
+                        {v.isReturn ? '📍 วางตรงนี้' : 'ยาเดิม'}
                       </div>
                     </div>
                   </div>
                 )
               })}
             </div>
-            {/* หน้าชั้น indicator */}
-            <div style={{ position:'relative', marginTop:6, height:24, display:'flex', alignItems:'center', justifyContent:'center' }}>
+            {/* Shelf edge glow — หน้าชั้น */}
+            <div style={{ position:'relative', marginTop:6, height:28, display:'flex', alignItems:'center', justifyContent:'center' }}>
               <div style={{ position:'absolute', top:0, left:12, right:12, height:2, background:'linear-gradient(to right,transparent,#5DDBA7,transparent)', borderRadius:2 }} />
               <div style={{ fontSize:10, fontWeight:700, color:'#5DDBA7', marginTop:10, display:'flex', alignItems:'center', gap:5 }}>
                 <span>🖐</span> หน้าชั้น — หยิบจากนี้ก่อน
@@ -778,7 +802,7 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
           </>
         )}
         <div style={{ textAlign:'center', fontSize:10, color:'rgba(255,255,255,0.3)', marginTop:7, paddingTop:7, borderTop:'1px solid rgba(255,255,255,0.07)' }}>
-          📋 เรียงตาม EXP — {totalQty} {drug.unit} ทั้งหมด (เติมใหม่ {totalRetQty} {drug.unit})
+          📋 เรียงตาม EXP — {total} vials ทั้งหมด (เติมใหม่ {totalRetQty} {drug.unit})
         </div>
       </div>
 
@@ -1017,9 +1041,25 @@ export default function App() {
     const putSide  = dir === 'fb' ? 'หลังชั้น' : dir === 'ltr' ? 'ขวา'   : 'ซ้าย'
     const labelPick = dir === 'fb' ? 'วางหน้าสุด'  : dir === 'ltr' ? 'วางซ้ายสุด'  : 'วางขวาสุด'
     const labelPut  = dir === 'fb' ? 'วางหลังสุด' : dir === 'ltr' ? 'วางขวาสุด' : 'วางซ้ายสุด'
-    // existing lots sorted ascending by EXP — ส่งให้ overlay แสดงตำแหน่งจริง
+    
+    // ✨ NEW: แตก lots เป็น individual vials
     const sortedEx = [...ex].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
-    const existingLots = sortedEx.map(l => ({ exp: fmtMY(l.expiry), expiry: l.expiry, qty: l.qty || 1 }))
+    const existingVials = []
+    let vialCounter = 1
+    for (const lot of sortedEx) {
+      for (let i = 0; i < lot.qty; i++) {
+        existingVials.push({
+          exp: fmtMY(lot.expiry),
+          expiry: lot.expiry,
+          vialNum: vialCounter++,
+          lotExpiry: lot.expiry  // เก็บไว้เช็ค FEFO
+        })
+      }
+    }
+    
+    // ส่ง existingVials แทน existingLots
+    const existingLots = existingVials
+    
     if (!ex.length) return { isFEFOSide: true, label: labelPick, reason: 'lot แรกในสต็อก', direction: dir, pickSide, putSide, existingLots }
     const fefoMs = new Date(ex[0].expiry).getTime()
     const retMs  = new Date(retExp).getTime()
@@ -1583,34 +1623,49 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
     
     const total = allLots.length
     const newIndex = allLots.findIndex(l => l.isNew)
-    // คำนวณ qty-based position
-    const allLotsWithQty = [
-      ...existingLots.map(l => ({ expiry: l.expiry, qty: l.qty || 1, isNew: false })),
-      ...otherReturnedLots.map(exp => ({ expiry: exp, qty: 1, isNew: false })),
-      { expiry, qty: 1, isNew: true }
-    ].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
-    const totalAmp = allLotsWithQty.reduce((s,l)=>s+l.qty,0)
-    let ampStart2 = 1
-    for (const l of allLotsWithQty) { if (l.isNew) break; ampStart2 += l.qty }
-    const ampEnd2 = ampStart2
     
     if (total === 1) {
+      // Single stock - lot แรก
       return { 
-        label: `🟣 วางตำแหน่งแอมป์ที่ 1 (lot แรก)`, 
+        label: `🟣 วางตำแหน่งที่ 1 (lot แรก)`, 
         color: '#9C27B0', 
         desc: 'lot แรก'
       }
     }
     
-    let label, color, positionText
+    // คำนวณอันดับตาม direction
+    let position, label, color, positionText
     
     if (dir === 'rtl') {
-      const ampFromRight = totalAmp - ampStart2 + 1
-      positionText = ampFromRight === 1 ? 'ขวาสุด' : ampStart2 === 1 ? 'ซ้ายสุด' : `แอมป์ที่ ${ampFromRight} จากขวา (จาก ${totalAmp})`
+      // RTL: ขวา = EXP ก่อน (index 0), ซ้าย = EXP หลัง
+      position = newIndex + 1  // ตำแหน่งที่ 1 = ขวาสุด
+      if (position === 1) {
+        positionText = 'ขวาสุด'
+      } else if (position === total) {
+        positionText = 'ซ้ายสุด'
+      } else {
+        positionText = `ที่ ${position} นับจากขวา`
+      }
     } else if (dir === 'fb') {
-      positionText = ampStart2 === 1 ? 'หน้าสุด' : ampEnd2 === totalAmp ? 'หลังสุด' : `แอมป์ที่ ${ampStart2} จากหน้า (จาก ${totalAmp})`
+      // FB: นับจากหน้า
+      position = newIndex + 1
+      if (position === 1) {
+        positionText = 'หน้าสุด'
+      } else if (position === total) {
+        positionText = 'หลังสุด'
+      } else {
+        positionText = `ที่ ${position} นับจากหน้า`
+      }
     } else {
-      positionText = ampStart2 === 1 ? 'ซ้ายสุด' : ampEnd2 === totalAmp ? 'ขวาสุด' : `แอมป์ที่ ${ampStart2} จากซ้าย (จาก ${totalAmp})`
+      // LTR: นับจากซ้าย
+      position = newIndex + 1
+      if (position === 1) {
+        positionText = 'ซ้ายสุด'
+      } else if (position === total) {
+        positionText = 'ขวาสุด'
+      } else {
+        positionText = `ที่ ${position} นับจากซ้าย`
+      }
     }
     
     const newDate = new Date(expiry)
@@ -1618,9 +1673,11 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
     const isBeforeFefo = newDate <= fefoDate
     
     if (isBeforeFefo) {
+      // EXP ใหม่กว่าหรือเท่ากับ FEFO → วางด้านที่ออกก่อน
       color = '#4CAF50'
       label = `🟢 วาง${positionText}`
     } else {
+      // EXP เก่ากว่า FEFO → วางด้านที่ออกหลัง
       color = '#F44336'
       label = `🔴 วาง${positionText}`
     }
@@ -1628,7 +1685,7 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
     return { 
       label, 
       color, 
-      desc: `จาก ${totalAmp} ${drug?.unit || 'unit'} ทั้งหมด`
+      desc: `จาก ${total} ตำแหน่ง`
     }
   }
   
@@ -2456,13 +2513,34 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
     const validEntries = state.entries.filter(e => (e.expM && e.expY) || e.fullDate)
     if (validEntries.length === 0) return alert('กรุณากรอก EXP อย่างน้อย 1 รายการ')
     
+    // 🔍 DEBUG: Log validEntries
+    console.log('[submitReturn Debug] validEntries:', validEntries.map(e => ({ qty: e.qty, expM: e.expM, expY: e.expY, fullDate: e.fullDate })))
+    console.log('[submitReturn Debug] Withdrawal:', { drugName: withdrawal.drugName, qty: withdrawal.qty })
+    
+    // 🛡️ SAFETY: ป้องกัน duplicate entries
+    const seen = new Set()
+    const uniqueEntries = validEntries.filter(entry => {
+      const key = `${entry.fullDate || ''}-${entry.expM || ''}-${entry.expY || ''}-${entry.qty || 0}`
+      if (seen.has(key)) {
+        console.warn('[submitReturn Warning] Duplicate entry detected and removed:', entry)
+        return false
+      }
+      seen.add(key)
+      return true
+    })
+    
+    if (uniqueEntries.length !== validEntries.length) {
+      console.error('[submitReturn ERROR] Removed', validEntries.length - uniqueEntries.length, 'duplicate entries!')
+      alert(`⚠️ ตรวจพบข้อมูลซ้ำ ${validEntries.length - uniqueEntries.length} รายการ - ระบบลบออกอัตโนมัติแล้ว`)
+    }
+    
     try {
       const dl = drugsWithStock()
       const drug = dl.find(d => d.id == withdrawal.drugId)
       if (!drug) throw new Error('ไม่พบข้อมูลยา')
       
       // บันทึกทุก lot ลง Firebase ก่อน
-      for (const entry of validEntries) {
+      for (const entry of uniqueEntries) {
         const iso = state.useFull
           ? entry.fullDate || '2099-12-31'
           : (entry.expM && entry.expY
@@ -2480,12 +2558,15 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
       }
       
       // Update withdrawal — partial or full
-      const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
-      const returnedNowQty = validEntries.reduce((s, e) => s + (e.qty || 1), 0)
+      const firstIso = uniqueEntries[0].fullDate || myToISO(uniqueEntries[0].expM, uniqueEntries[0].expY)
+      const returnedNowQty = uniqueEntries.reduce((s, e) => s + (e.qty || 1), 0)
       const prevReturnedQty = withdrawal.returned_qty || 0
       const newReturnedQty = prevReturnedQty + returnedNowQty
       const totalRequired = withdrawal.qty || 0
       const isFullyReturned = newReturnedQty >= totalRequired
+      
+      console.log('[submitReturn Debug] Summary:', { returnedNow: returnedNowQty, prev: prevReturnedQty, new: newReturnedQty, full: isFullyReturned })
+      
       await updateDoc(doc(db, 'withdrawals', withdrawal.docId), {
         returned_qty: newReturnedQty,
         returned: isFullyReturned,
@@ -4697,29 +4778,54 @@ function Withdraw({ drugs, nurses, lots, lotsOf, withdrawals, calcPutaway, db, f
     const entries = rs.entries || []
     const validEntries = entries.filter(e => e.fullDate || (e.expM && e.expY))
     if (!validEntries.length) return
+    
+    // 🔍 DEBUG: Log validEntries
+    console.log('[confirmRet Debug] validEntries:', validEntries.map(e => ({ qty: e.qty, expM: e.expM, expY: e.expY, fullDate: e.fullDate })))
+    console.log('[confirmRet Debug] Withdrawal:', { drugName: w.drugName, qty: w.qty })
+    
+    // 🛡️ SAFETY: ป้องกัน duplicate entries
+    const seen = new Set()
+    const uniqueEntries = validEntries.filter(entry => {
+      const key = `${entry.fullDate || ''}-${entry.expM || ''}-${entry.expY || ''}-${entry.qty || 0}`
+      if (seen.has(key)) {
+        console.warn('[confirmRet Warning] Duplicate entry detected and removed:', entry)
+        return false
+      }
+      seen.add(key)
+      return true
+    })
+    
+    if (uniqueEntries.length !== validEntries.length) {
+      console.error('[confirmRet ERROR] Removed', validEntries.length - uniqueEntries.length, 'duplicate entries!')
+      alert(`⚠️ ตรวจพบข้อมูลซ้ำ ${validEntries.length - uniqueEntries.length} รายการ - ระบบลบออกอัตโนมัติแล้ว`)
+    }
+    
     const drug = drugs.find(d => d.id == w.drugId) || { name: w.drugName, unit: '' }
     // บันทึกทุก lot ลง Firebase ก่อน
-    for (const entry of validEntries) {
+    for (const entry of uniqueEntries) {
       const iso = entry.fullDate || myToISO(entry.expM, entry.expY)
       await addDoc(collection(db, 'lots'), { drugId: w.drugId, qty: entry.qty, expiry: iso, ts: Timestamp.now() })
     }
     // แสดง overlay พร้อม return lots ทั้งหมดพร้อมกัน
-    if (validEntries.length > 0) {
+    if (uniqueEntries.length > 0) {
       if (drug?.singleStock) {
         const group = STORAGE_GROUPS.find(g => g.id === drug.groupId)
-        const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
-        setPutaway({ drug, qty: validEntries[0].qty, expiry: firstIso, context: 'return', singleStock: true, groupName: group?.name || '', groupIcon: group?.icon || '📦' })
+        const firstIso = uniqueEntries[0].fullDate || myToISO(uniqueEntries[0].expM, uniqueEntries[0].expY)
+        setPutaway({ drug, qty: uniqueEntries[0].qty, expiry: firstIso, context: 'return', singleStock: true, groupName: group?.name || '', groupIcon: group?.icon || '📦' })
       } else {
-        const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
+        const firstIso = uniqueEntries[0].fullDate || myToISO(uniqueEntries[0].expM, uniqueEntries[0].expY)
         const pa = calcPutaway(w.drugId, firstIso)
-        const returnLots = validEntries
-          .map(e => ({ expiry: e.fullDate || myToISO(e.expM, e.expY), qty: e.qty }))
+        const returnLots = uniqueEntries
+          .map(e => ({ expiry: e.fullDate || myToISO(e.expM, e.expiry), qty: e.qty }))
           .filter(e => e.expiry)
           .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
         setPutaway({ drug, returnLots, pa, context: 'return' })
       }
     }
-    const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
+    const firstIso = uniqueEntries[0].fullDate || myToISO(uniqueEntries[0].expM, uniqueEntries[0].expY)
+    
+    console.log('[confirmRet Debug] Summary:', { entriesCount: uniqueEntries.length, firstIso })
+    
     await updateDoc(doc(db, 'withdrawals', w.docId), { 
       returned: true, 
       retExp: firstIso,
