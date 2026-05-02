@@ -824,7 +824,9 @@ export default function App() {
   const [removals, setRemovals] = useState([])
   const [expirySnapshots, setExpirySnapshots] = useState([])
   const [pendingSyncs, setPendingSyncs] = useState([])
+  const [stockAdditions, setStockAdditions] = useState([])
   const [nurses, setNurses] = useState([])
+  const [groups, setGroups] = useState(STORAGE_GROUPS)
   const [seeded, setSeeded] = useState(false)
   const [locationDirs, setLocationDirs] = useState(() => {
     try { return JSON.parse(localStorage.getItem('termya_loc_dirs') || '{}') } catch { return {} }
@@ -862,6 +864,18 @@ export default function App() {
         }
       } catch (e) { console.error('Seed nurses error:', e) }
 
+      try {
+        // Seed storage_groups if empty
+        const gSnap = await getDocs(collection(db, 'storage_groups'))
+        if (gSnap.empty) {
+          const batch3 = writeBatch(db)
+          STORAGE_GROUPS.forEach(g => {
+            batch3.set(doc(db, 'storage_groups', g.id), g)
+          })
+          await batch3.commit()
+        }
+      } catch (e) { console.error('Seed storage_groups error:', e) }
+
       setSeeded(true)
     }
     init()
@@ -895,6 +909,19 @@ export default function App() {
     }))
     unsubs.push(onSnapshot(query(collection(db, 'pending_syncs'), orderBy('timestamp', 'desc')), s => {
       setPendingSyncs(s.docs.map(d => ({ docId: d.id, ...d.data() })))
+    }))
+    unsubs.push(onSnapshot(query(collection(db, 'stock_additions'), orderBy('ts', 'desc')), s => {
+      setStockAdditions(s.docs.map(d => ({ docId: d.id, ...d.data() })))
+    }))
+    unsubs.push(onSnapshot(collection(db, 'storage_groups'), s => {
+      if (!s.empty) {
+        const gs = s.docs.map(d => ({ ...d.data(), docId: d.id }))
+          .sort((a, b) => (a.order || 0) - (b.order || 0))
+        setGroups(gs)
+        // sync back to STORAGE_GROUPS so all direct reads stay consistent
+        STORAGE_GROUPS.length = 0
+        gs.forEach(g => STORAGE_GROUPS.push(g))
+      }
     }))
     setLoading(false)
     return () => unsubs.forEach(u => u())
@@ -1061,7 +1088,7 @@ export default function App() {
 
   const alerts = getAlerts()
   const alertCount = alerts.low.length + alerts.out.length + alerts.exp.length + alerts.exchangeDue.length + alerts.exchangeOver.length
-  const unret = withdrawals.filter(w => !w.returned && !w.pending_sync_id && w.usage_type !== 'Missing_Tracked' && w.usage_type !== 'Missing_Unknown' && w.usage_type !== 'Emergency')
+  const unret = withdrawals.filter(w => !w.pending_sync_id && w.usage_type !== 'Missing_Tracked' && w.usage_type !== 'Missing_Unknown' && w.usage_type !== 'Emergency' && (!w.returned || (w.returned_qty !== undefined && w.returned_qty < w.qty)))
   const lastCheck = checks[0]
 
   return (
@@ -1135,6 +1162,7 @@ export default function App() {
               drugsWithStock={drugsWithStock} lots={lots} withdrawals={withdrawals} expirySnapshots={expirySnapshots}
               checks={checks} daysLeft={daysLeft} fmtMY={fmtMY}
               calcPutaway={calcPutaway} lotsOf={lotsOf} removals={removals}
+              stockAdditions={stockAdditions} drugs={drugs}
             />
           )}
           {curTab === 'pending' && (
@@ -1158,6 +1186,7 @@ export default function App() {
             <Setting
               drugs={drugs} nurses={nurses} db={db}
               locationDirs={locationDirs} saveLocDir={saveLocDir}
+              groups={groups}
             />
           )}
         </div>
@@ -1747,6 +1776,20 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
           addedAt: Timestamp.now(), source: 'replace', loaned: false
         })
 
+        // 2.1 Record in stock_additions (NEW)
+        await addDoc(collection(db, 'stock_additions'), {
+          nurse,
+          drugId: drug.id,
+          drugName: drug.name,
+          qty: item.qty,
+          expiry: newExpiry,
+          source: 'replace',
+          loaned: false,
+          ts: Timestamp.now(),
+          related_pending_id: pending.docId,
+          note: pending.source === 'emergency' ? 'Replace: Emergency' : 'Replace: Missing Tracked'
+        })
+
         // 3. Withdrawal record
         if (pending.source === 'missing_tracked') {
           // Missing: UPDATE withdrawal เดิม (ที่สร้างตอน Stock Count) แทนการสร้างใหม่
@@ -1803,13 +1846,26 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         drugGroups[drug.id].lots.push({ expiry: newExpiry, qty: item.qty })
       }
 
-      // 4. Close pending if requested
-      if (closeJob) {
+      // 4. Update returned_qty; auto-close when fully returned
+      const returnedNow = validItems.reduce((s,i) => s + i.qty, 0)
+      if (isMissing) {
+        const prevReturned = pending.returned_qty || 0
+        const totalRequired = pending.qty || 0
+        const newReturned = prevReturned + returnedNow
+        const isComplete = newReturned >= totalRequired
+        await updateDoc(doc(db, 'pending_syncs', pending.docId), {
+          returned_qty: newReturned,
+          ...(isComplete ? {
+            status: 'completed', completed_at: Timestamp.now(), completed_by: nurse,
+            drug_name: validItems.map(i => dl.find(d=>d.id==i.drugId)?.name).filter(Boolean).join(', ')
+          } : {})
+        })
+      } else if (closeJob) {
         await updateDoc(doc(db, 'pending_syncs', pending.docId), {
           status: 'completed', completed_at: Timestamp.now(),
           completed_by: nurse,
           drug_name: validItems.map(i => dl.find(d=>d.id==i.drugId)?.name).filter(Boolean).join(', '),
-          qty: validItems.reduce((s,i) => s + i.qty, 0)
+          qty: returnedNow
         })
       }
 
@@ -1936,7 +1992,7 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
     <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.65)', zIndex:500, display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
       <div style={{ background:'#fff', borderRadius:'14px 14px 0 0', width:'100%', maxWidth:480, maxHeight:'90vh', display:'flex', flexDirection:'column' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'14px 16px', borderBottom:'0.5px solid #E0EAE5' }}>
-          <div style={{ fontSize:14, fontWeight:500, color:'#0F6E56' }}>✓ Replace & ปิดรายการ</div>
+          <div style={{ fontSize:14, fontWeight:500, color:'#0F6E56' }}>{isMissing ? '✓ Return & ปิดรายการ' : '✓ Replace & ปิดรายการ'}</div>
           <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', fontSize:20, color:'#8BA898' }}>✕</button>
         </div>
 
@@ -2064,9 +2120,32 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
             )
           })}
 
-          {/* Close job toggle */}
-          <div style={{ marginTop:10, background:'#F4F7F5', borderRadius:10, padding:'10px 12px' }}>
-            <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
+          {/* Close job toggle / return progress */}
+          {isMissing ? (() => {
+            const prevReturned = pending?.returned_qty || 0
+            const totalRequired = pending?.qty || 0
+            const cartQty = cart.reduce((s,c) => s + c.qty, 0)
+            const afterReturn = prevReturned + cartQty
+            const pct = totalRequired > 0 ? Math.min(100, Math.round(afterReturn / totalRequired * 100)) : 0
+            const isComplete = afterReturn >= totalRequired
+            return (
+              <div style={{ marginTop:10, background:'#F4F7F5', borderRadius:10, padding:'10px 12px' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                  <span style={{ fontSize:12, fontWeight:500, color:'#1A2E25' }}>ความคืบหน้าการคืนยา</span>
+                  <span style={{ fontSize:12, fontWeight:600, color: isComplete ? '#0F6E56' : '#E65100' }}>
+                    {afterReturn}/{totalRequired} amp
+                  </span>
+                </div>
+                <div style={{ background:'#D6EAE2', borderRadius:999, height:7, overflow:'hidden' }}>
+                  <div style={{ width:`${pct}%`, height:'100%', background: isComplete ? '#0F6E56' : '#FFB74D', borderRadius:999, transition:'width 0.3s' }}/>
+                </div>
+                <div style={{ fontSize:10, color:'#8BA898', marginTop:5 }}>
+                  {isComplete ? '✓ ครบแล้ว — จะปิดรายการอัตโนมัติ' : `ยังค้างอีก ${totalRequired - afterReturn} amp — pending จะยังค้างไว้`}
+                </div>
+              </div>
+            )
+          })() : (
+            <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer', marginTop:10, background:'#F4F7F5', borderRadius:10, padding:'10px 12px' }}>
               <input type="checkbox" checked={closeJob} onChange={e=>setCloseJob(e.target.checked)}
                 style={{ width:18, height:18, accentColor:'#0F6E56', cursor:'pointer' }} />
               <div>
@@ -2074,7 +2153,7 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
                 <div style={{ fontSize:10, color:'#8BA898', marginTop:1 }}>ยกเลิกถ้ายาคืนยังไม่ครบ</div>
               </div>
             </label>
-          </div>
+          )}
 
           <div style={{ marginTop:8, padding:'8px 10px', background:'#E1F5EE', borderRadius:8, fontSize:10, color:'#5F7A6A' }}>
             💡 ตัดสต็อกเดิม (FEFO) → เพิ่ม lot ใหม่ → บันทึกการใช้ → ปิดรายการ
@@ -2084,9 +2163,16 @@ function ReplaceModal({ open, onClose, pending, drugsWithStock, lots, nurses, db
         <div style={{ padding:'10px 14px', borderTop:'0.5px solid #E0EAE5' }}>
           <button className="btn primary full" onClick={submit}
             disabled={!nurse || cart.filter(c=>c.drugId).length===0 || saving}>
-            {saving ? 'กำลังบันทึก...' : isMissing 
-              ? `✓ Replace ${cart.filter(c=>c.drugId).length} lots (${cart.reduce((s,c)=>s+c.qty,0)} ชิ้น)${!closeJob?' (ค้างต่อ)':''}`
-              : `✓ Replace ${cart.filter(c=>c.drugId).length} รายการ${!closeJob?' (ค้างต่อ)':''}`
+            {saving ? 'กำลังบันทึก...' : isMissing ? (() => {
+              const _prev = pending?.returned_qty || 0
+              const _tot  = pending?.qty || 0
+              const _now  = cart.reduce((s,c) => s + c.qty, 0)
+              const _after = _prev + _now
+              const _done  = _after >= _tot
+              return _done
+                ? `✓ Return ${_now} amp · ครบ ${_tot}/${_tot} — ปิดรายการ`
+                : `✓ Return ${_now} amp · ยังเหลือ ${_tot - _after} amp`
+            })() : `✓ Replace ${cart.filter(c=>c.drugId).length} รายการ${!closeJob?' (ค้างต่อ)':''}`
             }
           </button>
         </div>
@@ -2120,10 +2206,11 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
   
   // รวม Stock Returns (withdrawals ที่ยังไม่ได้คืน และไม่มี pending_sync_id)
   const stockReturns = withdrawals.filter(w => 
-    !w.returned && 
     !w.pending_sync_id && 
     w.usage_type !== 'Missing_Tracked' && 
-    w.usage_type !== 'Emergency'
+    w.usage_type !== 'Missing_Unknown' && 
+    w.usage_type !== 'Emergency' &&
+    (!w.returned || (w.returned_qty !== undefined && w.returned_qty < w.qty))
   )
   
   // รวมทุกอย่างเป็น unified list
@@ -2401,10 +2488,16 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
         })
       }
       
-      // Update withdrawal
+      // Update withdrawal — partial or full
       const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
+      const returnedNowQty = validEntries.reduce((s, e) => s + (e.qty || 1), 0)
+      const prevReturnedQty = withdrawal.returned_qty || 0
+      const newReturnedQty = prevReturnedQty + returnedNowQty
+      const totalRequired = withdrawal.qty || 0
+      const isFullyReturned = newReturnedQty >= totalRequired
       await updateDoc(doc(db, 'withdrawals', withdrawal.docId), {
-        returned: true,
+        returned_qty: newReturnedQty,
+        returned: isFullyReturned,
         retExp: firstIso,
         return_timestamp: Timestamp.now()
       })
@@ -2497,14 +2590,43 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
                         {item.source === 'emergency' && <span className="b bo" style={{ marginLeft: 6 }}>Emergency</span>}
                       </div>
                       <div style={{ fontSize: 11, color: '#5F7A6A' }}>{drugName} · {item.nurse}</div>
+                      {item.source === 'missing_tracked' && item.qty > 0 && (() => {
+                        const ret = item.returned_qty || 0
+                        const tot = item.qty || 0
+                        const pct = Math.min(100, Math.round(ret / tot * 100))
+                        const done = ret >= tot
+                        return (
+                          <div style={{ marginTop:5 }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                              <span style={{ fontSize:10, color: done ? '#0F6E56' : '#E65100', fontWeight:500 }}>
+                                {done ? '✓ คืนครบแล้ว' : `คืนแล้ว ${ret}/${tot} amp`}
+                              </span>
+                              <span style={{ fontSize:10, color:'#8BA898' }}>{pct}%</span>
+                            </div>
+                            <div style={{ background:'#D6EAE2', borderRadius:999, height:5, overflow:'hidden' }}>
+                              <div style={{ width:`${pct}%`, height:'100%', background: done ? '#0F6E56' : '#FFB74D', borderRadius:999 }}/>
+                            </div>
+                          </div>
+                        )
+                      })()}
                       <div style={{ fontSize: 10, color: '#8BA898', marginTop: 2 }}>{fmtDTsafe(item.timestamp)}</div>
                     </div>
                     <div className={`aging ${agingClass}`}>⏱ {hours.toFixed(1)} ชม.</div>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    {item.source === 'missing_tracked' ? (
-                      <button className="btn primary full sm" onClick={() => setMissingReturnModal(item)}>✓ Return</button>
-                    ) : (
+                    {item.source === 'missing_tracked' ? (() => {
+                      const _ret = item.returned_qty || 0
+                      const _tot = item.qty || 0
+                      const _done = _tot > 0 && _ret >= _tot
+                      const _left = Math.max(0, _tot - _ret)
+                      return _done ? (
+                        <div style={{ flex:1, padding:'6px 10px', background:'#E1F5EE', borderRadius:8, fontSize:11, color:'#0F6E56', fontWeight:500, textAlign:'center' }}>✓ คืนครบแล้ว {_tot} amp</div>
+                      ) : (
+                        <button className="btn primary full sm" onClick={() => setMissingReturnModal(item)}>
+                          ✓ Return{_ret > 0 ? ` (เหลือ ${_left} amp)` : ''}
+                        </button>
+                      )
+                    })() : (
                       <button className="btn primary full sm" onClick={() => setReplaceModal(item)}>✓ Replace</button>
                     )}
                     <button className="btn danger sm" onClick={() => deletePending(item.docId)}>✕</button>
@@ -2528,16 +2650,40 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
                         <span className="b" style={{ marginLeft: 6, background:'#E3F2FD', color:'#1565C0', border:'0.5px solid #64B5F6', padding:'2px 8px', borderRadius:12, fontSize:10, fontWeight:600 }}>เบิกไป ×{item.qty}</span>
                       </div>
                       <div style={{ fontSize: 11, color: '#5F7A6A' }}>{item.nurse}</div>
+                      {/* Partial return progress */}
+                      {(() => {
+                        const _ret = item.returned_qty || 0
+                        const _tot = item.qty || 0
+                        if (_ret === 0 || _tot === 0) return null
+                        const _pct = Math.min(100, Math.round(_ret / _tot * 100))
+                        const _left = Math.max(0, _tot - _ret)
+                        return (
+                          <div style={{ marginTop:5 }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                              <span style={{ fontSize:10, color:'#E65100', fontWeight:500 }}>คืนแล้ว {_ret}/{_tot} · ยังเหลือ {_left}</span>
+                              <span style={{ fontSize:10, color:'#8BA898' }}>{_pct}%</span>
+                            </div>
+                            <div style={{ background:'#D6EAE2', borderRadius:999, height:5, overflow:'hidden' }}>
+                              <div style={{ width:`${_pct}%`, height:'100%', background:'#FFB74D', borderRadius:999 }}/>
+                            </div>
+                          </div>
+                        )
+                      })()}
                       <div style={{ fontSize: 10, color: '#8BA898', marginTop: 2 }}>{fmtDTsafe(item.timestamp)}</div>
                     </div>
                     <div className={`aging ${agingClass}`}>⏱ {hours.toFixed(1)} ชม.</div>
                   </div>
                   
-                  {!rs?.open && (
-                    <button onClick={() => openRet(item.docId, item.drugId)} className="btn primary full sm">
-                      ยืนยัน Return + ดูตำแหน่งการวาง
-                    </button>
-                  )}
+                  {!rs?.open && (() => {
+                    const _ret = item.returned_qty || 0
+                    const _tot = item.qty || 0
+                    const _left = Math.max(0, _tot - _ret)
+                    return (
+                      <button onClick={() => openRet(item.docId, item.drugId)} className="btn primary full sm">
+                        {_ret > 0 ? `ยืนยัน Return · เหลืออีก ${_left} ชิ้น` : 'ยืนยัน Return + ดูตำแหน่งการวาง'}
+                      </button>
+                    )
+                  })()}
                   
                   {rs?.open && (
                     <div style={{ marginTop: 8, padding: '10px 12px', background: '#F9FCF9', border: '0.5px solid #D8EAE0', borderRadius: 8 }}>
@@ -2631,8 +2777,18 @@ function PendingView({ pendingSyncs, withdrawals, drugs, nurses, db, setReplaceM
                         <button onClick={() => closeRet(item.docId)} className="btn sm" style={{ flex: 1 }}>
                           ยกเลิก
                         </button>
-                        <button onClick={() => submitReturn(item)} className="btn primary sm" style={{ flex: 1 }}>
-                          ยืนยัน Return + ดูตำแหน่งการวาง
+                        <button onClick={() => submitReturn(item)} className="btn primary sm" style={{ flex: 1 }}
+                          disabled={!rs?.entries?.some(e => e.fullDate || (e.expM && e.expY))}>
+                          {(() => {
+                            const _ret = item.returned_qty || 0
+                            const _tot = item.qty || 0
+                            const _now = rs?.entries?.reduce((s,e)=>s+(e.qty||1),0)||0
+                            const _after = _ret + _now
+                            const _done = _after >= _tot
+                            return _done
+                              ? `✓ Return ${_now} · ครบ ${_tot}/${_tot} — ปิดรายการ`
+                              : `✓ Return ${_now} · ยังเหลือ ${Math.max(0,_tot-_after)}`
+                          })()}
                         </button>
                       </div>
                     </div>
@@ -2857,8 +3013,9 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
   const dl = drugsWithStock()
   const openRet = docId => {
     const w = unret.find(x => x.docId === docId)
-    // สร้าง entries เริ่มต้น 1 ชุด
-    const initEntries = [{ qty: w?.qty || 1, expM: '', expY: '', fullDate: '', preview: null }]
+    // qty เริ่มต้น = ที่ยังเหลือ (qty - returned_qty)
+    const remaining = Math.max(1, (w?.qty || 1) - (w?.returned_qty || 0))
+    const initEntries = [{ qty: remaining, expM: '', expY: '', fullDate: '', preview: null }]
     setRetStates(s => ({ ...s, [docId]: { open: true, entries: initEntries } }))
   }
   const closeRet = docId => setRetStates(s => ({ ...s, [docId]: undefined }))
@@ -2929,7 +3086,27 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
     for (const entry of validEntries) {
       const iso = entry.fullDate || myToISO(entry.expM, entry.expY)
       if (!iso) continue
-      await addDoc(collection(db, 'lots'), { drugId: w.drugId, qty: entry.qty, expiry: iso, ts: Timestamp.now() })
+      await addDoc(collection(db, 'lots'), { 
+        drugId: w.drugId, 
+        qty: entry.qty, 
+        expiry: iso, 
+        source: 'return',
+        ts: Timestamp.now() 
+      })
+      
+      // Record in stock_additions (NEW)
+      await addDoc(collection(db, 'stock_additions'), {
+        nurse: w.nurse,
+        drugId: w.drugId,
+        drugName: w.drugName,
+        qty: entry.qty,
+        expiry: iso,
+        source: 'return',
+        loaned: false,
+        ts: Timestamp.now(),
+        related_withdrawal_id: w.docId,
+        note: 'Return: Stock Use'
+      })
     }
     // แสดง overlay พร้อม return lots ทั้งหมดพร้อมกัน
     if (validEntries.length > 0) {
@@ -2947,8 +3124,13 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
         setPutaway({ drug, returnLots, pa, context: 'return' })
       }
     }
+    const _retNow = validEntries.reduce((s, e) => s + (e.qty || 1), 0)
+    const _prevRet = w.returned_qty || 0
+    const _newRet  = _prevRet + _retNow
+    const _isFull  = _newRet >= (w.qty || 0)
     await updateDoc(doc(db, 'withdrawals', w.docId), { 
-      returned: true, 
+      returned_qty: _newRet,
+      returned: _isFull,
       retExp: validEntries[0]?.fullDate || myToISO(validEntries[0]?.expM, validEntries[0]?.expY),
       return_timestamp: Timestamp.now()
     })
@@ -3084,15 +3266,38 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
           <div className="blink-badge" style={{ position:'absolute', top:-6, left:12, background:'#F44336', color:'#fff', borderRadius:20, minWidth:20, height:20, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:600, padding:'0 5px', border:'2px solid #fff' }}>
             {unret.length}
           </div>
-          <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:10 }}>
-            <div className="alert-icon-pulse-blue" style={{ width:44, height:44, borderRadius:'50%', background:'#fff', border:'2px solid #42A5F5', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-              <span className="bounce-icon" style={{ fontSize:22 }}>📥</span>
-            </div>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:13, fontWeight:600, color:'#0D47A1', wordBreak:'break-word', overflowWrap:'break-word' }}>Pending Returns ({unret.length})</div>
-              <div style={{ fontSize:10, color:'#1565C0', marginTop:1 }}>ใส่ EXP เพื่อดูตำแหน่งวาง</div>
-            </div>
-          </div>
+          {/* Overall progress for partial returns */}
+          {(() => {
+            const _totReq = unret.reduce((s,w) => s + (w.qty||0), 0)
+            const _totRet = unret.reduce((s,w) => s + (w.returned_qty||0), 0)
+            const _pct = _totReq > 0 ? Math.min(100, Math.round(_totRet/_totReq*100)) : 0
+            const _partial = unret.filter(w => (w.returned_qty||0) > 0).length
+            return (
+              <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:10 }}>
+                <div className="alert-icon-pulse-blue" style={{ width:44, height:44, borderRadius:'50%', background:'#fff', border:'2px solid #42A5F5', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                  <span className="bounce-icon" style={{ fontSize:22 }}>📥</span>
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:13, fontWeight:600, color:'#0D47A1', wordBreak:'break-word', overflowWrap:'break-word' }}>Pending Returns ({unret.length})</div>
+                  <div style={{ fontSize:10, color:'#1565C0', marginTop:1 }}>
+                    ใส่ EXP เพื่อดูตำแหน่งวาง
+                    {_partial > 0 && <span style={{ marginLeft:6, color:'#E65100', fontWeight:500 }}>· กำลังคืน {_partial} รายการ</span>}
+                  </div>
+                  {_totReq > 0 && _totRet > 0 && (
+                    <div style={{ marginTop:5 }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                        <span style={{ fontSize:10, color:'#1565C0' }}>คืนแล้ว {_totRet}/{_totReq}</span>
+                        <span style={{ fontSize:10, color:'#1976D2' }}>{_pct}%</span>
+                      </div>
+                      <div style={{ background:'#BBDEFB', borderRadius:999, height:5, overflow:'hidden' }}>
+                        <div style={{ width:`${_pct}%`, height:'100%', background: _pct===100?'#0F6E56':'#42A5F5', borderRadius:999, transition:'width 0.3s' }}/>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
           {unret.map(w => {
             const rs = retStates[w.docId]
             const exLots = lots.filter(l => l.drugId == w.drugId && l.qty > 0).sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
@@ -3102,7 +3307,20 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 12, fontWeight: 500 }}>{w.bed} — {w.drugName}</span>
                     <span className="b bb">เบิกไป ×{w.qty}</span>
+                    {(w.returned_qty || 0) > 0 && (
+                      <span style={{ fontSize:10, color:'#E65100', fontWeight:500 }}>คืนแล้ว {w.returned_qty}/{w.qty}</span>
+                    )}
                   </div>
+                  {(w.returned_qty || 0) > 0 && (() => {
+                    const _pct = Math.min(100, Math.round((w.returned_qty||0) / (w.qty||1) * 100))
+                    return (
+                      <div style={{ marginTop:4, marginBottom:2 }}>
+                        <div style={{ background:'#D6EAE2', borderRadius:999, height:4, overflow:'hidden' }}>
+                          <div style={{ width:`${_pct}%`, height:'100%', background:'#FFB74D', borderRadius:999 }}/>
+                        </div>
+                      </div>
+                    )
+                  })()}
                   <div style={{ fontSize: 10, color: '#8BA898', marginTop: 2 }}>{w.nurse} · {w.ts && fmtMY(w.ts.toDate ? w.ts.toDate().toISOString() : w.ts)}</div>
                   {rs?.open && (
                     <div className="retpanel">
@@ -3157,16 +3375,31 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
                         <button className="btn primary sm" style={{ flex: 1 }}
                           onClick={() => confirmRet(w)}
                           disabled={!rs.entries.some(e => e.fullDate || (e.expM && e.expY))}>
-                          ยืนยัน Return + ดูตำแหน่งวาง
+                          {(() => {
+                            const _prev = w.returned_qty || 0
+                            const _tot  = w.qty || 0
+                            const _now  = rs.entries.reduce((s,e) => s + (e.qty||1), 0)
+                            const _after = _prev + _now
+                            return _after >= _tot
+                              ? `✓ Return ${_now} · ครบ ${_tot}/${_tot} — ปิดรายการ`
+                              : _prev > 0
+                                ? `✓ Return ${_now} · ยังเหลือ ${Math.max(0,_tot-_after)}`
+                                : 'ยืนยัน Return + ดูตำแหน่งวาง'
+                          })()}
                         </button>
                         <button className="btn sm" onClick={() => closeRet(w.docId)}>ยกเลิก</button>
                       </div>
                     </div>
                   )}
                 </div>
-                {!rs?.open && (
-                  <button onClick={() => openRet(w.docId)} style={{ padding: '5px 11px', borderRadius: 8, border: '0.5px solid #CECBF6', background: '#EEEDFE', color: '#3C3489', fontSize: 11, fontWeight: 500, cursor: 'pointer', flexShrink: 0 }}>Return</button>
-                )}
+                {!rs?.open && (() => {
+                  const _left = Math.max(0, (w.qty||0) - (w.returned_qty||0))
+                  return (
+                    <button onClick={() => openRet(w.docId)} style={{ padding: '5px 11px', borderRadius: 8, border: '0.5px solid #CECBF6', background: '#EEEDFE', color: '#3C3489', fontSize: 11, fontWeight: 500, cursor: 'pointer', flexShrink: 0 }}>
+                      {(w.returned_qty||0) > 0 ? `Return (เหลือ ${_left})` : 'Return'}
+                    </button>
+                  )
+                })()}
               </div>
             )
           })}
@@ -3181,6 +3414,11 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
           const h = (new Date() - (p.timestamp?.toDate ? p.timestamp.toDate() : new Date(p.timestamp))) / 3600000
           return h >= 6
         })
+        // คำนวณ progress รวมทุก pending
+        const totalRequired = missingPending.reduce((s,p) => s + (p.qty || 0), 0)
+        const totalReturned = missingPending.reduce((s,p) => s + (p.returned_qty || 0), 0)
+        const partialCount  = missingPending.filter(p => (p.returned_qty || 0) > 0 && (p.returned_qty || 0) < (p.qty || 0)).length
+        const overallPct    = totalRequired > 0 ? Math.min(100, Math.round(totalReturned / totalRequired * 100)) : 0
         return (
           <div style={{ background:'#E3F2FD', border:'1.5px solid #64B5F6', borderRadius:14, padding:'12px 14px', cursor:'pointer', position:'relative', transition:'all 0.2s ease', marginBottom:8 }}
             onClick={() => setCurTab('pending')}
@@ -3201,7 +3439,20 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
                 </div>
                 <div style={{ fontSize:11, color:'#1976D2', marginTop:3, lineHeight:1.5 }}>
                   🔍 Missing Tracked: {missingPending.length} รายการ
+                  {partialCount > 0 && <span style={{ marginLeft:6, color:'#E65100', fontWeight:500 }}>· กำลังคืน {partialCount} รายการ</span>}
                 </div>
+                {/* Overall progress bar */}
+                {totalRequired > 0 && (
+                  <div style={{ marginTop:6 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                      <span style={{ fontSize:10, color:'#1565C0' }}>คืนแล้ว {totalReturned}/{totalRequired} amp</span>
+                      <span style={{ fontSize:10, color:'#1976D2' }}>{overallPct}%</span>
+                    </div>
+                    <div style={{ background:'#BBDEFB', borderRadius:999, height:5, overflow:'hidden' }}>
+                      <div style={{ width:`${overallPct}%`, height:'100%', background: overallPct===100 ? '#0F6E56' : '#2196F3', borderRadius:999, transition:'width 0.3s' }}/>
+                    </div>
+                  </div>
+                )}
                 {hasOld && (
                   <div style={{ fontSize:10, color:'#0D47A1', marginTop:3, fontWeight:500 }}>⚠️ มีรายการค้างเกิน 6 ชม.</div>
                 )}
@@ -3589,6 +3840,20 @@ function StockCount({ drugs, nurses, lots, lotsOf, db, fmtMY, daysLeft }) {
             const expiry = myToISO(lot.expM, lot.expY)
             const ref = doc(collection(db,'lots'))
             batch.set(ref, { drugId: d.id, qty: lot.qty, expiry, note:'stock-count-add', ts: Timestamp.now() })
+            
+            // Record in stock_additions (NEW)
+            const addRef = doc(collection(db,'stock_additions'))
+            batch.set(addRef, {
+              nurse,
+              drugId: d.id,
+              drugName: d.name,
+              qty: lot.qty,
+              expiry,
+              source: 'stock-count-add',
+              loaned: false,
+              ts: Timestamp.now(),
+              note: 'Stock Count: เพิ่มจากการนับ'
+            })
           }
         } else if (cnt > systemTotal && ls.length > 0) {
           batch.update(doc(db,'lots',ls[0].docId), { qty: ls[0].qty + (cnt - systemTotal) })
@@ -4333,7 +4598,30 @@ function Withdraw({ drugs, nurses, lots, lotsOf, withdrawals, calcPutaway, db, f
     const ex = lots.filter(l => l.drugId == rstDrugId && l.qty > 0).sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
     const pa = calcPutaway(rstDrugId, iso)
     const fefoExp = ex.length ? fmtMY(ex[0].expiry) : null
-    await addDoc(collection(db, 'lots'), { drugId: parseInt(rstDrugId), qty: rstQty, expiry: iso, loaned: rstLoaned, ts: Timestamp.now(), addedBy: rstNurse })
+    
+    await addDoc(collection(db, 'lots'), { 
+      drugId: parseInt(rstDrugId), 
+      qty: rstQty, 
+      expiry: iso, 
+      loaned: rstLoaned, 
+      source: 'restock',
+      ts: Timestamp.now(), 
+      addedBy: rstNurse 
+    })
+    
+    // Record in stock_additions (NEW)
+    await addDoc(collection(db, 'stock_additions'), {
+      nurse: rstNurse,
+      drugId: parseInt(rstDrugId),
+      drugName: drug.name,
+      qty: rstQty,
+      expiry: iso,
+      source: 'restock',
+      loaned: rstLoaned,
+      ts: Timestamp.now(),
+      note: 'เติมจากห้องยา'
+    })
+    
     setRstOk(true); setRstDrugId(''); setRstDQ(''); setRstQty(1); setRstExpM(''); setRstExpY(''); setRstFullDate(''); setRstLoaned(false)
     setTimeout(() => setRstOk(false), 2000)
     if (drug?.singleStock) {
@@ -5000,11 +5288,12 @@ function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY,
                     ) : w.usage_type === 'Missing_Unknown' ? (
                       <span className="b" style={{background:'#FCE4EC', color:'#AD1457', border:'0.5px solid #F06292', fontSize:10, padding:'2px 7px'}}>❓ Missing-Unk</span>
                     ) : null}
-                    {w.returned && <span className="b bg">Return แล้ว{w.retExp ? ` · EXP ${fmtMY(w.retExp)}` : ''}{w.return_timestamp ? ` · ${fmtDT(w.return_timestamp)}` : ''}</span>}
+                    {w.returned && w.usage_type !== 'Missing_Unknown' && <span className="b bg">Return แล้ว{w.retExp ? ` · EXP ${fmtMY(w.retExp)}` : ''}{w.return_timestamp ? ` · ${fmtDT(w.return_timestamp)}` : ''}</span>}
+                    {w.usage_type === 'Missing_Unknown' && <span className="b" style={{background:'#F3E5F5',color:'#6A1B9A',border:'0.5px solid #CE93D8',fontSize:10,padding:'2px 7px'}}>ตัดออกจากระบบ</span>}
                   </div>
                   <div style={{ fontSize: 10, color: '#8BA898' }}>{w.bed} · {w.nurse}{w.note && w.note !== '(Quick)' && !w.note.includes('Replace:') && !w.note.includes('Multi Quick Use') ? ' · ' + w.note : w.note === '(Quick)' ? ' · ⚡ Quick' : ''}</div>
                   <div style={{ fontSize: 10, color: '#8BA898', fontFamily: 'monospace' }}>{w.ts && fmtDT(w.ts)}</div>
-                  {rs?.open && !w.returned && (
+                  {rs?.open && !w.returned && w.usage_type !== 'Missing_Unknown' && (
                     <div className="retpanel">
                       <div style={{ fontSize: 11, fontWeight: 500, color: '#3C3489', marginBottom: 8 }}>ระบุ EXP ยาที่คืน</div>
                       {exLots.length > 0 && <div style={{ fontSize: 11, color: '#534AB7', background: 'rgba(83,74,183,.08)', borderRadius: 6, padding: '5px 8px', marginBottom: 8 }}>FEFO ปัจจุบัน: <b>{fmtMY(exLots[0].expiry)}</b></div>}
@@ -5024,10 +5313,10 @@ function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY,
                     </div>
                   )}
                 </div>
-                {!w.returned && !rs?.open && (
+                {!w.returned && !rs?.open && w.usage_type !== 'Missing_Unknown' && (
                   <button onClick={() => openRet(w.docId)} style={{ padding: '4px 10px', borderRadius: 6, border: '0.5px solid #CECBF6', background: '#EEEDFE', color: '#3C3489', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>Return</button>
                 )}
-                {w.returned && <span style={{ fontSize: 10, color: '#8BA898' }}>คืนแล้ว</span>}
+                {w.returned && w.usage_type !== 'Missing_Unknown' && <span style={{ fontSize: 10, color: '#8BA898' }}>คืนแล้ว</span>}
               </div>
             )
           }) : <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: '#8BA898' }}>ยังไม่มีบันทึก</div>
@@ -5051,7 +5340,7 @@ function History({ withdrawals, checks, lots, lotsOf, calcPutaway, fmtDT, fmtMY,
 }
 
 /* ═══ EXPORT ═══ */
-function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, calcPutaway, lotsOf, removals, expirySnapshots }) {
+function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, calcPutaway, lotsOf, removals, expirySnapshots, stockAdditions, drugs }) {
   const dl = drugsWithStock()
   const [reportDays, setReportDays] = useState(30)
   const [kpiMonth, setKpiMonth] = useState('all')
@@ -5574,6 +5863,58 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
   // keep alias for backward compat
   const exportMonthLog = exportCombinedMonthLog
 
+  /* ── Stock Additions Export ── */
+  const exportStockAdditions = () => {
+    const sourceMap = {
+      'restock': 'เติมจากห้องยา',
+      'return': 'Return (Stock Use)',
+      'replace': 'Replace (Emergency/Missing)',
+      'stock-count-add': 'Stock Count (เพิ่ม)'
+    }
+    
+    let csv = 'Bangkok Hospital Chanthaburi : ICU-A\r\n'
+    csv += '=== ประวัติการเพิ่มสต็อก (Stock Additions) ===\r\n\r\n'
+    csv += 'วันเวลา,พยาบาล,ยา,จำนวน,หน่วย,EXP,ประเภท,ฝากใช้,หมายเหตุ\r\n'
+    
+    const sorted = [...stockAdditions].sort((a,b) => {
+      const aTime = a.ts?.toDate ? a.ts.toDate() : new Date(a.ts)
+      const bTime = b.ts?.toDate ? b.ts.toDate() : new Date(b.ts)
+      return bTime - aTime
+    })
+    
+    sorted.forEach(sa => {
+      const drug = drugs.find(d => d.id == sa.drugId)
+      const unit = drug?.unit || ''
+      const timestamp = fmtDTsafe(sa.ts)
+      const expiry = fmtMY(sa.expiry)
+      const sourceLabel = sourceMap[sa.source] || sa.source
+      const loanedLabel = sa.loaned ? 'ใช่' : ''
+      const note = sa.note || ''
+      
+      csv += `"${timestamp}","${sa.nurse}","${sa.drugName}",${sa.qty},"${unit}","${expiry}","${sourceLabel}","${loanedLabel}","${note}"\r\n`
+    })
+    
+    csv += '\r\n=== สรุปตามประเภท ===\r\n'
+    csv += 'ประเภท,จำนวนครั้ง,จำนวนหน่วยรวม\r\n'
+    
+    const bySource = {}
+    sorted.forEach(sa => {
+      if (!bySource[sa.source]) {
+        bySource[sa.source] = { count: 0, totalUnits: 0 }
+      }
+      bySource[sa.source].count++
+      bySource[sa.source].totalUnits += sa.qty
+    })
+    
+    Object.keys(sourceMap).forEach(source => {
+      const data = bySource[source] || { count: 0, totalUnits: 0 }
+      csv += `"${sourceMap[source]}",${data.count},${data.totalUnits}\r\n`
+    })
+    
+    csv += '\r\nExport โดย Term-Ya Application\r\n'
+    exportCSV('Stock_Additions', csv)
+  }
+
   /* ── Bar chart helper ── */
   const barColor = (total) => total === 2 ? '#0F6E56' : total === 1 ? '#854F0B' : '#E24B4A'
   const rateColor = comp.rate >= 80 ? '#0F6E56' : comp.rate >= 50 ? '#854F0B' : '#A32D2D'
@@ -5665,6 +6006,7 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
     { label: 'รายงานประจำเดือน',          desc: 'สรุป stock + ยาหมดอายุ + อัตราเช็คยา',  fn: exportMonthly },
     { label: 'สต็อกปัจจุบัน',             desc: 'ทุก drug + จำนวน + สถานะ',             fn: exportStock },
     { label: 'ข้อมูล Lot + EXP',          desc: 'ทุก lot เรียงตาม EXP',                  fn: exportLots },
+    { label: '📥 ประวัติเติมสต็อก',        desc: 'ทุกครั้งที่เพิ่มยา — แยกตาม source',    fn: exportStockAdditions },
     { label: 'ประวัติใช้ยา/Return',        desc: 'ตามเดือนที่เลือก + Expiry Snapshot',  fn: exportWithdrawals },
     { label: 'ประวัติเช็คยารายวัน (CSV)',    desc: 'ตามเดือนที่เลือกด้านบน',               fn: exportMonthLog },
     { label: 'จำนวนยาต่อ session (Matrix)',   desc: 'ยา × session — ทุกครั้งที่นับ',         fn: exportDrugCountMatrix },
@@ -6058,17 +6400,19 @@ function Export({ drugsWithStock, lots, withdrawals, checks, daysLeft, fmtMY, ca
 }
 
 /* ═══ SETTING ═══ */
-function Setting({ drugs, nurses, db, locationDirs, saveLocDir }) {
+function Setting({ drugs, nurses, db, locationDirs, saveLocDir, groups }) {
   const [editId, setEditId]     = useState(null)
   const [form, setForm]         = useState({ name:'', unit:'amp', par:1, min:1, groupId:'G1', highAlert:false, controlled:false, singleStock:false, alertDays:30, fullDateExp:false, shelfDirectionOverride:'inherit' })
   const [drugSearch, setDrugSearch] = useState('')
   const [newNurse, setNewNurse] = useState('')
   const [saving, setSaving]     = useState(false)
   const [ok, setOk]             = useState('')
-  // Location management
-  const [locations, setLocations]   = useState(STORAGE_GROUPS)
+  // Location management — ใช้ groups จาก Firestore (realtime)
+  const locations = groups || STORAGE_GROUPS
   const [newLocName, setNewLocName] = useState('')
   const [newLocIcon, setNewLocIcon] = useState('📦')
+  const [dragId,     setDragId]     = useState(null)
+  const [dragOverId, setDragOverId] = useState(null)
   const [settingTab, setSettingTab] = useState('drugs') // drugs | nurses | locations
   const [qrDrug, setQrDrug] = useState(null)
 
@@ -6111,16 +6455,24 @@ function Setting({ drugs, nurses, db, locationDirs, saveLocDir }) {
     const d = snap.docs.find(x => x.data().name === name)
     if (d) await deleteDoc(doc(db, 'nurses', d.id))
   }
-  // Location management (in-memory + STORAGE_GROUPS mutation for session)
-  const addLocation = () => {
+  // Location management — บันทึกลง Firestore
+  const addLocation = async () => {
     if (!newLocName.trim()) return
+    setSaving(true)
     const newId = `GX${Date.now()}`
     const colors = ['#0F6E56','#185FA5','#854F0B','#534AB7','#A32D2D','#5F5E5A']
     const color  = colors[locations.length % colors.length]
-    const newLoc = { id: newId, name: newLocName.trim(), icon: newLocIcon, color }
-    STORAGE_GROUPS.push(newLoc)
-    setLocations([...STORAGE_GROUPS])
-    setNewLocName(''); setOk('เพิ่ม Location สำเร็จ ✓ (ใช้ได้ใน session นี้)'); setTimeout(() => setOk(''), 3000)
+    const newLoc = { id: newId, name: newLocName.trim(), icon: newLocIcon, color, order: locations.length }
+    await setDoc(doc(db, 'storage_groups', newId), newLoc)
+    setNewLocName(''); setSaving(false)
+    setOk('เพิ่ม Location สำเร็จ ✓'); setTimeout(() => setOk(''), 2000)
+  }
+  const deleteLocation = async (locId) => {
+    const inUse = drugs.some(d => d.groupId === locId)
+    if (inUse) { alert('ไม่สามารถลบได้ — มียาที่ใช้ Location นี้อยู่'); return }
+    if (!window.confirm('ลบ Location นี้?')) return
+    await deleteDoc(doc(db, 'storage_groups', locId))
+    setOk('ลบ Location แล้ว'); setTimeout(() => setOk(''), 2000)
   }
 
   // Drug list filtered by search
@@ -6365,18 +6717,53 @@ function Setting({ drugs, nurses, db, locationDirs, saveLocDir }) {
             <button className="btn primary full" onClick={addLocation} disabled={!newLocName.trim()}>+ เพิ่ม Location</button>
           </div>
           <div className="card">
-            <div className="slbl">Locations ทั้งหมด ({STORAGE_GROUPS.length})</div>
-            {STORAGE_GROUPS.map(g => {
+            <div className="slbl">Locations ทั้งหมด ({locations.length})</div>
+            {locations.some(g => g.id.startsWith('GX')) && (
+              <div style={{ fontSize:10, color:'#8BA898', marginBottom:6, display:'flex', alignItems:'center', gap:4 }}>
+                <span>☰</span><span>ลาก Location ที่เพิ่มเองเพื่อเรียงลำดับใหม่</span>
+              </div>
+            )}
+            {locations.map((g, idx) => {
               const dir = locationDirs[g.id] || g.shelfDirection || 'fb'
               const dirLabel = dir === 'fb' ? 'หน้า/หลัง' : dir === 'ltr' ? 'ซ้าย=ก่อน' : 'ขวา=ก่อน'
+              const isDraggable = g.id.startsWith('GX')
+              const isDragOver  = dragOverId === g.id
               return (
-                <div key={g.id} className="row" style={{ flexWrap:'wrap', gap:8 }}>
-                  <div style={{ width:10, height:10, borderRadius:3, background:g.color, flexShrink:0 }}/>
+                <div key={g.id} className="row"
+                  draggable={isDraggable}
+                  onDragStart={isDraggable ? () => setDragId(g.id) : undefined}
+                  onDragOver={isDraggable ? (e) => { e.preventDefault(); setDragOverId(g.id) } : undefined}
+                  onDragLeave={isDraggable ? () => setDragOverId(null) : undefined}
+                  onDrop={isDraggable ? async (e) => {
+                    e.preventDefault(); setDragOverId(null)
+                    if (!dragId || dragId === g.id) { setDragId(null); return }
+                    // reorder: สลับ order ของ dragId กับ target
+                    const custom = locations.filter(x => x.id.startsWith('GX'))
+                    const from   = custom.findIndex(x => x.id === dragId)
+                    const to     = custom.findIndex(x => x.id === g.id)
+                    if (from === -1 || to === -1) { setDragId(null); return }
+                    const reordered = [...custom]
+                    const [moved]   = reordered.splice(from, 1)
+                    reordered.splice(to, 0, moved)
+                    // บันทึก order ใหม่ลง Firestore
+                    const batch = writeBatch(db)
+                    reordered.forEach((x, i) => {
+                      batch.update(doc(db, 'storage_groups', x.docId || x.id), { order: 1000 + i })
+                    })
+                    await batch.commit()
+                    setDragId(null)
+                  } : undefined}
+                  style={{ flexWrap:'wrap', gap:8, cursor: isDraggable ? 'grab' : 'default',
+                    background: isDragOver ? '#E1F5EE' : 'transparent',
+                    border: isDragOver ? '0.5px dashed #0F6E56' : '0.5px solid transparent',
+                    borderRadius:8, padding:'8px 4px', marginBottom:2, transition:'background 0.15s' }}>
+                  {isDraggable && <span style={{ color:'#B0C4B8', fontSize:14, cursor:'grab', flexShrink:0 }}>☰</span>}
+                  <div style={{ width:10, height:10, borderRadius:3, background:g.color, flexShrink:0, marginTop:1 }}/>
                   <div style={{ flex:1 }}>
                     <div style={{ fontSize:12, fontWeight:500 }}>{g.icon} {g.name}</div>
                     <div style={{ fontSize:10, color:'#8BA898' }}>{drugs.filter(d=>d.groupId===g.id).length} ยา · {dirLabel}</div>
                   </div>
-                  <div style={{ display:'flex', gap:3 }}>
+                  <div style={{ display:'flex', gap:3, alignItems:'center' }}>
                     {[['fb','หน้า/หลัง'],['ltr','ซ้าย=ก่อน'],['rtl','ขวา=ก่อน']].map(([v,lbl]) => (
                       <button key={v} onClick={() => saveLocDir(g.id, v)}
                         style={{ padding:'3px 7px', borderRadius:6, border:'0.5px solid', fontSize:10, cursor:'pointer', fontFamily:'inherit',
@@ -6386,8 +6773,13 @@ function Setting({ drugs, nurses, db, locationDirs, saveLocDir }) {
                         {lbl}
                       </button>
                     ))}
+                    {isDraggable && (
+                      <button onClick={() => deleteLocation(g.docId || g.id)}
+                        style={{ padding:'3px 7px', borderRadius:6, border:'0.5px solid #E8B4B4', background:'#FFF0F0', color:'#A32D2D', fontSize:10, cursor:'pointer', fontFamily:'inherit' }}>
+                        ✕ ลบ
+                      </button>
+                    )}
                   </div>
-                  {g.id.startsWith('GX') && <span style={{ fontSize:10, color:'#8BA898' }}>session only</span>}
                 </div>
               )
             })}
