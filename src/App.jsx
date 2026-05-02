@@ -428,7 +428,7 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                 {/* Header */}
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                    <div style={{ fontSize:15, fontWeight:700, color:'#fff', background:'rgba(255,255,255,0.1)', width:26, height:26, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12 }}>
+                    <div style={{ fontWeight:700, color:'#fff', background:'rgba(255,255,255,0.1)', width:26, height:26, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12 }}>
                       {idx + 1}
                     </div>
                     <div>
@@ -3086,8 +3086,30 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
     const rs = retStates[w.docId]; if (!rs) return
     const drug = dl.find(d => d.id == w.drugId) || { name: w.drugName, unit: '' }
     const validEntries = rs.entries.filter(e => e.fullDate || (e.expM && e.expY))
+    
+    // 🔍 DEBUG: Log validEntries
+    console.log('[Return Debug] validEntries:', validEntries.map(e => ({ qty: e.qty, expM: e.expM, expY: e.expY, fullDate: e.fullDate })))
+    console.log('[Return Debug] Withdrawal:', { drugName: w.drugName, qty: w.qty, nurse: w.nurse })
+    
+    // 🛡️ SAFETY: ป้องกัน duplicate entries
+    const seen = new Set()
+    const uniqueEntries = validEntries.filter(entry => {
+      const key = `${entry.fullDate || ''}-${entry.expM || ''}-${entry.expY || ''}-${entry.qty || 0}`
+      if (seen.has(key)) {
+        console.warn('[Return Warning] Duplicate entry detected and removed:', entry)
+        return false
+      }
+      seen.add(key)
+      return true
+    })
+    
+    if (uniqueEntries.length !== validEntries.length) {
+      console.error('[Return ERROR] Removed', validEntries.length - uniqueEntries.length, 'duplicate entries!')
+      alert(`⚠️ ตรวจพบข้อมูลซ้ำ ${validEntries.length - uniqueEntries.length} รายการ - ระบบลบออกอัตโนมัติแล้ว`)
+    }
+    
     // บันทึกทุก lot ลง Firebase ก่อน
-    for (const entry of validEntries) {
+    for (const entry of uniqueEntries) {
       const iso = entry.fullDate || myToISO(entry.expM, entry.expY)
       if (!iso) continue
       await addDoc(collection(db, 'lots'), { 
@@ -3113,29 +3135,32 @@ function Dashboard({ drugsWithStock, alerts, unret, lastCheck, lots, lotsOf, cal
       })
     }
     // แสดง overlay พร้อม return lots ทั้งหมดพร้อมกัน
-    if (validEntries.length > 0) {
+    if (uniqueEntries.length > 0) {
       if (drug?.singleStock) {
         const group = STORAGE_GROUPS.find(g => g.id === drug.groupId)
-        const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
-        setPutaway({ drug, qty: validEntries[0].qty, expiry: firstIso, context: 'return', singleStock: true, groupName: group?.name || '', groupIcon: group?.icon || '📦' })
+        const firstIso = uniqueEntries[0].fullDate || myToISO(uniqueEntries[0].expM, uniqueEntries[0].expY)
+        setPutaway({ drug, qty: uniqueEntries[0].qty, expiry: firstIso, context: 'return', singleStock: true, groupName: group?.name || '', groupIcon: group?.icon || '📦' })
       } else {
-        const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
+        const firstIso = uniqueEntries[0].fullDate || myToISO(uniqueEntries[0].expM, uniqueEntries[0].expY)
         const pa = calcPutaway(w.drugId, firstIso)
-        const returnLots = validEntries
+        const returnLots = uniqueEntries
           .map(e => ({ expiry: e.fullDate || myToISO(e.expM, e.expY), qty: e.qty }))
           .filter(e => e.expiry)
           .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
         setPutaway({ drug, returnLots, pa, context: 'return' })
       }
     }
-    const _retNow = validEntries.reduce((s, e) => s + (e.qty || 1), 0)
+    const _retNow = uniqueEntries.reduce((s, e) => s + (e.qty || 1), 0)
     const _prevRet = w.returned_qty || 0
     const _newRet  = _prevRet + _retNow
     const _isFull  = _newRet >= (w.qty || 0)
+    
+    console.log('[Return Debug] Summary:', { retNow: _retNow, prevRet: _prevRet, newRet: _newRet, isFull: _isFull })
+    
     await updateDoc(doc(db, 'withdrawals', w.docId), { 
       returned_qty: _newRet,
       returned: _isFull,
-      retExp: validEntries[0]?.fullDate || myToISO(validEntries[0]?.expM, validEntries[0]?.expY),
+      retExp: uniqueEntries[0]?.fullDate || myToISO(uniqueEntries[0]?.expM, uniqueEntries[0]?.expY),
       return_timestamp: Timestamp.now()
     })
     closeRet(w.docId)
