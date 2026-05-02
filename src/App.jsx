@@ -454,7 +454,7 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                       <span>Slot {item.groupName || 'M-04'}</span>
                     </div>
                     <div style={{ fontSize:11, color:'rgba(255,255,255,0.85)' }}>
-                      Single stock - วางลงตำแหน่งเดิม (ของเดิมหยิบออกไปแล้ว)
+                      Single stock - วางลงตำแหน่งเดิม
                     </div>
                   </div>
                 ) : (
@@ -479,8 +479,8 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                             </>
                           ) : item.pa.direction === 'fb' ? (
                             <>
-                              <span>← หลัง</span>
-                              <span>หน้า (หยิบก่อน) →</span>
+                              <span>← หน้า (หยิบก่อน)</span>
+                              <span>หลัง →</span>
                             </>
                           ) : (
                             <>
@@ -533,8 +533,8 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                               )
                             }
                             
-                            // Reverse สำหรับ RTL และ FB
-                            if (item.pa.direction === 'rtl' || item.pa.direction === 'fb') {
+                            // Reverse เฉพาะ RTL
+                            if (item.pa.direction === 'rtl') {
                               return timelineItems.reverse()
                             }
                             
@@ -699,8 +699,8 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
 
   // สำหรับ RTL แสดงจากขวาไปซ้าย → reverse
   const displayLots = dir === 'rtl' ? [...allSorted].reverse() : allSorted
-  // FB: หน้าอยู่ขวา หลังอยู่ซ้าย → reverse (เหมือน RTL)
-  const fbLots = [...allSorted].reverse()
+  // FB: หน้าอยู่ซ้าย หลังอยู่ขวา → ไม่ reverse (แสดงตาม allSorted: เก่า→ใหม่)
+  const fbLots = allSorted
 
   const pillStyle = { background:'rgba(255,255,255,0.18)', borderRadius:20, padding:'3px 10px', fontSize:11, color:'#fff' }
   const rowStyle  = { display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', fontSize:12, color:'rgba(255,255,255,0.85)', borderBottom:'1px solid rgba(255,255,255,0.08)' }
