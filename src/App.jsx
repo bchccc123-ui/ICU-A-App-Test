@@ -560,12 +560,15 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
       </div>
     )
   }
+  if (!pa) return null
   const dir = pa.direction || 'fb'
 
   // รองรับทั้ง single lot (expiry/qty) และ multi lot (returnLots array)
-  const retLots = returnLots
-    ? [...returnLots].sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
-    : [{ expiry, qty: qty || 1 }]
+  // กรอง lot ที่ expiry ไม่ valid ออกก่อน render
+  const retLots = (returnLots
+    ? [...returnLots].filter(l => l.expiry && !isNaN(new Date(l.expiry))).sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
+    : (expiry && !isNaN(new Date(expiry)) ? [{ expiry, qty: qty || 1 }] : []))
+  if (!retLots.length) return null
 
   const RETURN_COLORS = [
     { bg:'#0F4A38', border:'#5DDBA7', text:'#fff', label:'#5DDBA7' },
@@ -662,7 +665,7 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
     const slots = []
     let ampNum = 1
     for (const l of lotsArr) {
-      const q = l.qty || 1
+      const q = Math.max(1, parseInt(l.qty) || 1)
       for (let i = 0; i < q; i++) {
         slots.push({ ...l, ampNum: ampNum++ })
       }
@@ -670,12 +673,10 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
     return slots
   }
   const horizSlots = expandToSlots(displayLots)
-  // fb: หน้า = ล่างสุด (แสดงจาก หลัง→หน้า = top→bottom ใน layout)
-  // fbLots index 0 = หน้า → แสดงในลำดับ reverse (หลังก่อน บนสุด)
-  const fbSlotsRaw = expandToSlots([...allSorted].reverse()) // top = หลัง, bottom = หน้า
-  // คำนวณ ampNum จริงสำหรับ fb (นับจากหน้า = 1)
-  let fbAmpCounter = totalQty
-  const fbSlots = fbSlotsRaw.map(s => ({ ...s, ampNum: fbAmpCounter-- }))
+  // fb: top = หลัง (EXP มาก), bottom = หน้า (EXP น้อย)
+  const fbSlotsRaw = expandToSlots([...allSorted].reverse()) // top = หลัง
+  // re-number ampNum จากหน้า (1) → fbSlotsRaw[last] = แอมป์ที่ 1
+  const fbSlots = fbSlotsRaw.map((s, i) => ({ ...s, ampNum: totalQty - i }))
 
   const pillStyle = { background:'rgba(255,255,255,0.18)', borderRadius:20, padding:'3px 10px', fontSize:11, color:'#fff' }
   const rowStyle  = { display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', fontSize:12, color:'rgba(255,255,255,0.85)', borderBottom:'1px solid rgba(255,255,255,0.08)' }
@@ -4712,7 +4713,7 @@ function Withdraw({ drugs, nurses, lots, lotsOf, withdrawals, calcPutaway, db, f
         const firstIso = validEntries[0].fullDate || myToISO(validEntries[0].expM, validEntries[0].expY)
         const pa = calcPutaway(w.drugId, firstIso)
         const returnLots = validEntries
-          .map(e => ({ expiry: e.fullDate || myToISO(e.expM, e.expiry), qty: e.qty }))
+          .map(e => ({ expiry: e.fullDate || myToISO(e.expM, e.expY), qty: e.qty }))
           .filter(e => e.expiry)
           .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))
         setPutaway({ drug, returnLots, pa, context: 'return' })
