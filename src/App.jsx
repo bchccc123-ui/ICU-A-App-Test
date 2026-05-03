@@ -514,23 +514,48 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                               )
                             })
                             
-                            // เพิ่ม new vials (วางตรงนี้)
-                            for (let i = 0; i < numReturning; i++) {
-                              timelineItems.push(
-                                <div key={`new-${i}`} style={{ 
-                                  fontSize:9, 
-                                  padding:'4px 6px', 
-                                  borderRadius:6, 
-                                  background:'rgba(93,219,167,0.3)', 
-                                  border:'1px solid rgba(93,219,167,0.5)', 
-                                  color:'#5DDBA7', 
-                                  fontWeight:700,
-                                  whiteSpace:'nowrap'
-                                }}>
-                                  📍 วาง
-                                  <div style={{fontSize:7}}>#{existingVials.length + i + 1}</div>
-                                </div>
-                              )
+                            // เพิ่ม new vials (วางตรงนี้) - แสดง EXP แต่ละ lot
+                            if (item.returnLots && item.returnLots.length > 0) {
+                              // หลาย lots - แสดง EXP แต่ละอัน
+                              item.returnLots.forEach((lot, lotIdx) => {
+                                for (let i = 0; i < lot.qty; i++) {
+                                  timelineItems.push(
+                                    <div key={`new-${lotIdx}-${i}`} style={{ 
+                                      fontSize:9, 
+                                      padding:'4px 6px', 
+                                      borderRadius:6, 
+                                      background:'rgba(93,219,167,0.3)', 
+                                      border:'1px solid rgba(93,219,167,0.5)', 
+                                      color:'#5DDBA7', 
+                                      fontWeight:700,
+                                      whiteSpace:'nowrap'
+                                    }}>
+                                      📍 {fmtMY(lot.expiry)}
+                                      <div style={{fontSize:7, opacity:0.8}}>วาง</div>
+                                    </div>
+                                  )
+                                }
+                              })
+                            } else {
+                              // Single lot - แสดง EXP
+                              const numReturning = item.qty || 1
+                              for (let i = 0; i < numReturning; i++) {
+                                timelineItems.push(
+                                  <div key={`new-${i}`} style={{ 
+                                    fontSize:9, 
+                                    padding:'4px 6px', 
+                                    borderRadius:6, 
+                                    background:'rgba(93,219,167,0.3)', 
+                                    border:'1px solid rgba(93,219,167,0.5)', 
+                                    color:'#5DDBA7', 
+                                    fontWeight:700,
+                                    whiteSpace:'nowrap'
+                                  }}>
+                                    📍 {fmtMY(item.expiry)}
+                                    <div style={{fontSize:7, opacity:0.8}}>วาง</div>
+                                  </div>
+                                )
+                              }
                             }
                             
                             // Reverse เฉพาะ RTL
@@ -733,7 +758,7 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                 const rc = v.isReturn ? RETURN_COLORS[v.retIdx] : null
                 return (
                   <div key={i} style={{
-                    flex:0, minWidth:48, borderRadius:9, padding:'8px 4px', textAlign:'center',
+                    flex:0, minWidth:52, borderRadius:9, padding:'8px 4px', textAlign:'center',
                     background: rc ? rc.bg : 'rgba(255,255,255,0.1)',
                     border: rc ? `2px solid ${rc.border}` : '1.5px solid rgba(255,255,255,0.15)',
                     color: rc ? rc.text : 'rgba(255,255,255,0.7)',
@@ -745,9 +770,8 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                         ▶ วาง
                       </div>
                     )}
-                    <div style={{ fontSize:11, fontWeight:800 }}>{v.exp}</div>
-                    <div style={{ fontSize:7, marginTop:1, opacity:0.5 }}>#{v.vialNum}</div>
-                    <div style={{ fontSize:9, marginTop:2, opacity:0.8 }}>{v.isReturn ? 'ใหม่' : 'เดิม'}</div>
+                    <div style={{ fontSize:12, fontWeight:800, marginTop:2 }}>{v.exp}</div>
+                    <div style={{ fontSize:9, marginTop:4, opacity:0.7 }}>{v.isReturn ? 'ใหม่' : 'เดิม'}</div>
                   </div>
                 )
               })}
@@ -774,16 +798,15 @@ function PutawayOverlay({ drug, drugs, qty, expiry, returnLots, pa, fefoExp, con
                   }}>
                     {/* Left badge */}
                     <div style={{
-                      width:60, flexShrink:0, display:'flex', flexDirection:'column',
-                      alignItems:'center', justifyContent:'center', padding:'6px 4px',
+                      width:68, flexShrink:0, display:'flex', flexDirection:'column',
+                      alignItems:'center', justifyContent:'center', padding:'8px 4px',
                       borderRight:'1px solid rgba(255,255,255,0.08)', alignSelf:'stretch',
                     }}>
-                      <div style={{ fontSize:16, fontWeight:700, lineHeight:1, color: rc ? rc.label : 'rgba(255,255,255,0.4)' }}>#{v.vialNum}</div>
-                      <div style={{ fontSize:8, fontWeight:600, marginTop:2, color: rc ? rc.label : 'rgba(255,255,255,0.3)' }}>{posWord}</div>
+                      <div style={{ fontSize:11, fontWeight:700, lineHeight:1.2, color: rc ? rc.label : 'rgba(255,255,255,0.5)', textAlign:'center' }}>{posWord}</div>
                     </div>
-                    {/* Right: EXP + type + arrow */}
+                    {/* Right: EXP + type */}
                     <div style={{ flex:1, padding:'0 10px' }}>
-                      <div style={{ fontSize:12, fontWeight:800, color:'#fff' }}>{v.exp}</div>
+                      <div style={{ fontSize:13, fontWeight:800, color:'#fff' }}>{v.exp}</div>
                       <div style={{ fontSize:9, marginTop:2, color: rc ? rc.label : 'rgba(255,255,255,0.4)' }}>
                         {v.isReturn ? '📍 วางตรงนี้' : 'ยาเดิม'}
                       </div>
